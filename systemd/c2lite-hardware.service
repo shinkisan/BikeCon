@@ -1,0 +1,15 @@
+# /etc/systemd/system/c2lite-hardware.service
+[Unit]
+Description=Initialize C2Lite USB Gadget Hardware
+DefaultDependencies=no
+After=local-fs.target configfs.target
+Requires=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash /usr/local/bin/usb_gamepad.sh
+RemainAfterExit=yes
+WorkingDirectory=/tmp
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+# /etc/systemd/system/c2lite-joycon.service
+[Unit]
+Description=C2Lite Joy-Con Driver
+Requires=c2lite-mixer.service
+After=c2lite-mixer.service bluetooth.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/zhou/c2lite_controller
+ExecStart=/home/zhou/c2lite_controller/c2lite/bin/python3 joycon_service.py
+Restart=always
+RestartSec=5
+ExecStopPost=-/bin/sh -c 'for mac in $(/usr/bin/bluetoothctl devices Connected | grep -i "Joy-Con" | awk "{print $$2}"); do /usr/bin/bluetoothctl disconnect $mac; done'
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

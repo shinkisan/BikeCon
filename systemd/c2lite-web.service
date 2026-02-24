@@ -1,0 +1,15 @@
+# /etc/systemd/system/c2lite-web.service
+[Unit]
+Description=C2Lite Web Dashboard
+After=c2lite-mixer.service network.target
+
+[Service]
+Type=simple
+User=zhou
+WorkingDirectory=/home/zhou/c2lite_controller
+ExecStart=/home/zhou/c2lite_controller/c2lite/bin/python3 -m uvicorn webapp:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
