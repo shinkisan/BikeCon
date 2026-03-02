@@ -99,6 +99,15 @@ class BikeClient:
                 "This field is required and contains device-specific heartbeat data. "
                 "Please configure it locally in config.json (add to .gitignore to keep it private)."
             )
+        
+        # Log successful configuration load
+        print(f"[BikeDriver] ✓ Configuration loaded successfully from config.json")
+        print(f"[BikeDriver]   - Handshake packets: {len(self.HANDSHAKE_PACKETS)} packet(s)")
+        for i, pkt in enumerate(self.HANDSHAKE_PACKETS):
+            hex_str = pkt.hex()
+            print(f"[BikeDriver]     [{i+1}] {len(pkt)} bytes: {hex_str}")
+        hb_hex = self.HEARTBEAT_PAYLOAD
+        print(f"[BikeDriver]   - Heartbeat payload: {len(hb_hex)//2} bytes: {hb_hex}")
 
     def _read_varint(self, data: bytes, start_idx: int):
         res = 0
