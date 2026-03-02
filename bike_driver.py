@@ -4,6 +4,8 @@ import struct
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Callable, Any
+from pathlib import Path
+import json
 from bleak import BleakClient, BleakScanner
 
 class BikeStatus(Enum):
@@ -33,13 +35,9 @@ class BikeClient:
     TAG_CALORIES = 0x20 
     TAG_RESISTANCE = 0x28
     
-    HANDSHAKE_PACKETS = [
-        bytes.fromhex("a5a5a00023003216ef23550193a40000000001b3312f31ff6239653836366561663762636463366200fce5"),
-        bytes.fromhex("a5a5a00111003216ef23550193a50b00000001b3302f33ea01"),
-        bytes.fromhex("a5a5a00211003216ef23550193a60000000001b3302f3109ca"),
-        bytes.fromhex("a5a5a0034b003216ef23550393a7e903000002b53130362f33ff0a183566633738363236643965376334323964363337643735621210663838393063393131383431396635321d0000784220cbccedcb06532b")
-    ]
-    HEARTBEAT_PAYLOAD = "3216ef23550193dd1c04000001b53130362f37ff20e807"
+    # Default placeholders. These values may be overridden by config.json at runtime.
+    HANDSHAKE_PACKETS = []
+    HEARTBEAT_PAYLOAD = ""
 
     def __init__(self, 
                  mac_address: str, 
@@ -58,6 +56,49 @@ class BikeClient:
         # 任务句柄
         self._watchdog_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
+
+        # Load sensitive values from config.json (REQUIRED).
+        # These must be supplied by the user to prevent sensitive data in the repository.
+        self.HANDSHAKE_PACKETS = None
+        self.HEARTBEAT_PAYLOAD = None
+        self._load_config()
+
+    def _load_config(self):
+        """
+        Load device-specific handshake and heartbeat payload from config.json.
+        Raises ValueError if required fields are missing.
+        """
+        try:
+            cfg_path = Path(__file__).parent / "config.json"
+            if cfg_path.exists():
+                cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                hs = cfg.get("handshake_packets")
+                hb = cfg.get("heartbeat_payload")
+                
+                if isinstance(hs, list) and hs:
+                    # Convert hex strings to bytes
+                    self.HANDSHAKE_PACKETS = [bytes.fromhex(x) for x in hs if isinstance(x, str)]
+                
+                if isinstance(hb, str) and hb:
+                    self.HEARTBEAT_PAYLOAD = hb
+        except json.JSONDecodeError as e:
+            raise ValueError(f"[BikeDriver] config.json is invalid JSON: {e}")
+        except Exception as e:
+            raise ValueError(f"[BikeDriver] Failed to load config.json: {e}")
+        
+        # Ensure both required fields are loaded
+        if not self.HANDSHAKE_PACKETS:
+            raise ValueError(
+                "[BikeDriver] CRITICAL: 'handshake_packets' not found or empty in config.json. "
+                "This field is required and contains device-specific Bluetooth handshake data. "
+                "Please configure it locally in config.json (add to .gitignore to keep it private)."
+            )
+        if not self.HEARTBEAT_PAYLOAD:
+            raise ValueError(
+                "[BikeDriver] CRITICAL: 'heartbeat_payload' not found or empty in config.json. "
+                "This field is required and contains device-specific heartbeat data. "
+                "Please configure it locally in config.json (add to .gitignore to keep it private)."
+            )
 
     def _read_varint(self, data: bytes, start_idx: int):
         res = 0

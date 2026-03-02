@@ -5,3 +5,10 @@ logs/
 *.log
 .DS_Store
 c2lite/
+
+# Local device configuration (contains sensitive device MAC and Bluetooth protocol data)
+# Copy config.example.json to config.json and customize it locally, then do NOT commit it
+config.json
+
+# Internal prompts and planning documents
+.github/prompts/

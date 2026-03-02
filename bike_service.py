@@ -7,9 +7,29 @@ import logging.handlers
 import shutil
 import atexit
 import glob
+from pathlib import Path
 from bike_driver import BikeClient, BikeData, BikeStatus
 
-BIKE_MAC = "EC:64:C9:33:A9:36"
+# Load bike MAC from config.json (REQUIRED).
+# This must be supplied by the user to prevent hardcoding device MAC in the repository.
+BIKE_MAC = None
+try:
+    cfg_path = Path(__file__).parent / "config.json"
+    if cfg_path.exists():
+        with cfg_path.open(encoding="utf-8") as f:
+            cfg = json.load(f)
+            mac = cfg.get("bike_mac")
+            if isinstance(mac, str) and mac:
+                BIKE_MAC = mac
+except Exception as e:
+    print(f"[BikeService] Failed to load bike_mac from config.json: {e}")
+
+if not BIKE_MAC:
+    raise ValueError(
+        "[BikeService] CRITICAL: 'bike_mac' not found or empty in config.json. "
+        "This field is required and contains your device's Bluetooth MAC address. "
+        "Please configure it locally in config.json (add to .gitignore to keep it private)."
+    )
 SOCKET_PATH = "/tmp/c2lite_mixer.sock"
 WEBAPP_SOCKET = "/tmp/c2lite_webapp.sock"
 BIKE_ACTIVE_FLAG = "/tmp/c2lite_bike_active"

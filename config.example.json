@@ -1,0 +1,14 @@
+{
+	"target": "rt",
+	"max_rpm": 100,
+	"_comment": "=== REQUIRED: Device-specific configuration ===",
+	"bike_mac": "00:11:22:33:44:55",
+	"handshake_packets": [
+		"a5a5a00023000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+		"a5a5a00111000000000000000000000000000000000000000000",
+		"a5a5a00211000000000000000000000000000000000000000000",
+		"a5a5a0034b000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+	],
+	"heartbeat_payload": "00000000000000000000000000000000",
+	"_instructions": "Copy this file to config.json and fill in your device's MAC address and Bluetooth protocol data. The config.json file should be kept local and NOT committed to the repository (add to .gitignore)."
+}
