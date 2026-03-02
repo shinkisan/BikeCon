@@ -7,6 +7,7 @@ import logging.handlers
 import shutil
 import atexit
 import glob
+import signal
 from pathlib import Path
 from bike_driver import BikeClient, BikeData, BikeStatus
 
@@ -161,33 +162,48 @@ class BikeBridge:
 
     async def run(self):
         print(f"[Bridge] 启动蓝牙服务 ({BIKE_MAC})...")
-        
+        loop = asyncio.get_running_loop()
+        stop_event = asyncio.Event()
+
+        def _signal_handler():
+            print("[Bridge] 收到终止信号，开始清理...")
+            stop_event.set()
+
+        # 注册 Unix 信号处理（也适用于 Ctrl+C）
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, _signal_handler)
+            except NotImplementedError:
+                # Windows 的事件循环不支持 add_signal_handler
+                pass
+
         while True:
             try:
-                # 1. 尝试启动驱动
-                # 现在的 connect() 成功后会启动内部看门狗，看门狗会负责后续所有的掉线重连
                 success = await self.client.connect()
-                
+
                 if success:
                     print(f"\n[Bridge] 驱动启动成功...")
-                    
-                    # 2. [关键修改] 移除外层的 is_connected 循环检查
-                    # 改为检测 client.running 标志。
-                    # 只要驱动还在运行意图中（没有被代码显式 stop），这里就一直挂起，
-                    # 即使中间蓝牙断了，驱动内部的看门狗也在疯狂重试，我们不要插手。
-                    while self.client.running:
+                    while self.client.running and not stop_event.is_set():
                         await asyncio.sleep(1)
-                        
-                    print(f"\n[Bridge] 驱动停止运行 (Running=False)")
+                    print(f"\n[Bridge] 驱动停止运行 (Running=False or signal)")
                 else:
                     print(f"[Bridge] 启动失败，无法找到设备或连接被拒绝")
 
             except Exception as e:
                 print(f"[Bridge] 运行时严重错误: {e}")
-            
-            # 如果 connect 返回 False 或 意外退出，等待 5 秒重试
+
+            if stop_event.is_set():
+                break
+
             print("[Bridge] 5秒后尝试重启服务...")
             await asyncio.sleep(5)
+
+        # 在退出前断开蓝牙
+        try:
+            await self.client.disconnect(is_retry=False)
+        except Exception as e:
+            print(f"[Bridge] 退出断开时发生错误: {e}")
+        print("[Bridge] 已安全退出")
 
 
 if __name__ == "__main__":
