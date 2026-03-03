@@ -31,9 +31,19 @@ if not BIKE_MAC:
         "This field is required and contains your device's Bluetooth MAC address. "
         "Please configure it locally in config.json (add to .gitignore to keep it private)."
     )
-SOCKET_PATH = "/tmp/c2lite_mixer.sock"
-WEBAPP_SOCKET = "/tmp/c2lite_webapp.sock"
-BIKE_ACTIVE_FLAG = "/tmp/c2lite_bike_active"
+SOCKET_PATH = "/var/run/BikeCon/mixer.sock"
+WEBAPP_SOCKET = "/var/run/BikeCon/webapp.sock"
+BIKE_ACTIVE_FLAG = "/var/run/BikeCon/bike_active"
+
+# 确保运行时目录存在
+try:
+    os.makedirs("/var/run/BikeCon", exist_ok=True)
+except PermissionError:
+    # 降级方案：使用 /tmp 作为备用
+    SOCKET_PATH = "/tmp/BikeCon/mixer.sock"
+    WEBAPP_SOCKET = "/tmp/BikeCon/webapp.sock"
+    BIKE_ACTIVE_FLAG = "/tmp/BikeCon/bike_active"
+    os.makedirs("/tmp/BikeCon", exist_ok=True)
 
 # --- 日志配置 ---
 # 日志目录遵循 FHS 标准，放在 /var/log/BikeCon/

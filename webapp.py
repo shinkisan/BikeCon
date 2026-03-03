@@ -13,9 +13,18 @@ from fastapi.staticfiles import StaticFiles
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 
-# 定义 Socket 路径
-WEBAPP_SOCKET = "/tmp/c2lite_webapp.sock"  # 接收来自 bike_service 的数据
-MIXER_SOCKET = "/tmp/c2lite_mixer.sock"    # 发送指令给 mixer (控制源切换等)
+# 定义 Socket 路径 (遵循 FHS 标准)
+WEBAPP_SOCKET = "/var/run/BikeCon/webapp.sock"  # 接收来自 bike_service 的数据
+MIXER_SOCKET = "/var/run/BikeCon/mixer.sock"    # 发送指令给 mixer (控制源切换等)
+
+# 确保运行时目录存在
+try:
+    os.makedirs("/var/run/BikeCon", exist_ok=True)
+except PermissionError:
+    # 降级方案：使用 /tmp 作为备用
+    WEBAPP_SOCKET = "/tmp/BikeCon/webapp.sock"
+    MIXER_SOCKET = "/tmp/BikeCon/mixer.sock"
+    os.makedirs("/tmp/BikeCon", exist_ok=True)
 
 # --- 全局状态 ---
 active_websockets: Set[WebSocket] = set()

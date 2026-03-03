@@ -7,7 +7,15 @@ import sys
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
-SOCKET_PATH = "/tmp/c2lite_mixer.sock"
+# Socket path follows FHS standard
+SOCKET_PATH = "/var/run/BikeCon/mixer.sock"
+
+# Fallback if /var/run is not writable
+try:
+    os.makedirs("/var/run/BikeCon", exist_ok=True)
+except (PermissionError, OSError):
+    SOCKET_PATH = "/tmp/BikeCon/mixer.sock"
+    os.makedirs("/tmp/BikeCon", exist_ok=True)
 HID_PATH = "/dev/hidg0"
 
 class Mixer:

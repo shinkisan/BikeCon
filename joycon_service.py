@@ -10,7 +10,15 @@ import subprocess
 import errno
 from evdev import ecodes, InputDevice, list_devices
 
-SOCKET_PATH = "/tmp/c2lite_mixer.sock"
+# Socket path follows FHS standard
+SOCKET_PATH = "/var/run/BikeCon/mixer.sock"
+
+# Fallback if /var/run is not writable
+try:
+    os.makedirs("/var/run/BikeCon", exist_ok=True)
+except (PermissionError, OSError):
+    SOCKET_PATH = "/tmp/BikeCon/mixer.sock"
+    os.makedirs("/tmp/BikeCon", exist_ok=True)
 IDLE_TIMEOUT = 600 # 普通手柄 10分钟无操作断开
 IMU_IDLE_TIMEOUT = 2 # IMU 2秒无数据视为手动关闭，强制断开
 BIKE_ACTIVE_FLAG = "/tmp/c2lite_bike_active"
