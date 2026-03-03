@@ -36,10 +36,22 @@ WEBAPP_SOCKET = "/tmp/c2lite_webapp.sock"
 BIKE_ACTIVE_FLAG = "/tmp/c2lite_bike_active"
 
 # --- 日志配置 ---
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-RAM_LOG_PATH = "/tmp/bike_raw_data.log"
-PERSISTENT_LOG_DIR = os.path.join(CURRENT_DIR, "logs")
-os.makedirs(PERSISTENT_LOG_DIR, exist_ok=True)
+# 日志目录遵循 FHS 标准，放在 /var/log/BikeCon/
+LOG_DIR = "/var/log/BikeCon"
+RAM_LOG_PATH = os.path.join(LOG_DIR, "bike_raw_data.log")
+PERSISTENT_LOG_DIR = LOG_DIR
+
+# 确保日志目录存在，如果不存在则创建（需要脚本有写权限）
+try:
+    os.makedirs(LOG_DIR, exist_ok=True)
+except PermissionError:
+    print(f"[Warning] 无法创建日志目录 {LOG_DIR}，请确保运行用户有权限或预先创建此目录")
+    # 降级方案：使用 /tmp 作为备用
+    LOG_DIR = "/tmp/BikeCon"
+    RAM_LOG_PATH = os.path.join(LOG_DIR, "bike_raw_data.log")
+    PERSISTENT_LOG_DIR = LOG_DIR
+    os.makedirs(LOG_DIR, exist_ok=True)
+
 MAX_LOG_SIZE = 2 * 1024 * 1024 
 BACKUP_COUNT = 1
 
