@@ -1,0 +1,20 @@
+# /etc/systemd/system/BikeCon-joycon.service
+[Unit]
+Description=BikeCon Joy-Con Driver
+Requires=BikeCon-mixer.service
+After=BikeCon-mixer.service bluetooth.target
+
+[Service]
+Type=simple
+User=root
+Environment="BIKEYCON_HOME=/opt/BikeCon"
+Environment="BIKEYCON_CONFIG=/etc/BikeCon"
+WorkingDirectory=$BIKEYCON_HOME
+ExecStart=$BIKEYCON_HOME/c2lite/bin/python3 joycon_service.py
+Restart=always
+RestartSec=5
+ExecStopPost=-/bin/sh -c 'for mac in $(/usr/bin/bluetoothctl devices Connected | grep -i "Joy-Con" | awk "{print $$2}"); do /usr/bin/bluetoothctl disconnect $mac; done'
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

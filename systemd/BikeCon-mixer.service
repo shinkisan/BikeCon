@@ -1,0 +1,20 @@
+# /etc/systemd/system/BikeCon-mixer.service
+[Unit]
+Description=BikeCon HID Mixer Service
+Requires=BikeCon-hardware.service
+After=BikeCon-hardware.service network.target
+
+[Service]
+Type=simple
+User=root
+Environment="BIKEYCON_HOME=/opt/BikeCon"
+Environment="BIKEYCON_CONFIG=/etc/BikeCon"
+WorkingDirectory=$BIKEYCON_HOME
+ExecStartPre=/usr/bin/test -e /dev/hidg0
+ExecStart=$BIKEYCON_HOME/c2lite/bin/python3 mixer.py
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
