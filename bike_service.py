@@ -11,11 +11,11 @@ import signal
 from pathlib import Path
 from bike_driver import BikeClient, BikeData, BikeStatus
 
-# Load bike MAC from config.json (REQUIRED).
+# Load bike MAC from identity.json (REQUIRED).
 # This must be supplied by the user to prevent hardcoding device MAC in the repository.
 BIKE_MAC = None
 try:
-    cfg_path = Path(__file__).parent / "config.json"
+    cfg_path = Path(__file__).parent / "identity.json"
     if cfg_path.exists():
         with cfg_path.open(encoding="utf-8") as f:
             cfg = json.load(f)
@@ -23,13 +23,13 @@ try:
             if isinstance(mac, str) and mac:
                 BIKE_MAC = mac
 except Exception as e:
-    print(f"[BikeService] Failed to load bike_mac from config.json: {e}")
+    print(f"[BikeService] Failed to load bike_mac from identity.json: {e}")
 
 if not BIKE_MAC:
     raise ValueError(
-        "[BikeService] CRITICAL: 'bike_mac' not found or empty in config.json. "
+        "[BikeService] CRITICAL: 'bike_mac' not found or empty in identity.json. "
         "This field is required and contains your device's Bluetooth MAC address. "
-        "Please configure it locally in config.json (add to .gitignore to keep it private)."
+        "Please configure it locally in identity.json (add to .gitignore to keep it private)."
     )
 SOCKET_PATH = "/var/run/BikeCon/mixer.sock"
 WEBAPP_SOCKET = "/var/run/BikeCon/webapp.sock"
