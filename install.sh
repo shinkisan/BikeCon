@@ -120,7 +120,13 @@ echo ""
 
 # Step 3: Copy application code
 echo "[Step 3] Copying application code to /opt/BikeCon..."
-cp -r "$SCRIPT_DIR"/*.py /opt/BikeCon/ 2>/dev/null || true
+for pyfile in "$SCRIPT_DIR"/*.py; do
+    filename=$(basename "$pyfile")
+    # Skip identity_gen.py as it's only for credential extraction, not deployment
+    if [[ "$filename" != "identity_gen.py" ]]; then
+        cp "$pyfile" /opt/BikeCon/
+    fi
+done
 cp "$SCRIPT_DIR/index.html" /opt/BikeCon/ 2>/dev/null || true
 echo -e "${GREEN}✓ Application code copied${NC}"
 echo ""
