@@ -11,13 +11,13 @@ import signal
 from pathlib import Path
 from bike_driver import BikeClient, BikeData, BikeStatus
 
+IDENTITY_PATH = Path("/etc/BikeCon/identity.json")
+
 # Load bike MAC from identity.json (REQUIRED).
-# This must be supplied by the user to prevent hardcoding device MAC in the repository.
 BIKE_MAC = None
 try:
-    cfg_path = Path(__file__).parent / "identity.json"
-    if cfg_path.exists():
-        with cfg_path.open(encoding="utf-8") as f:
+    if IDENTITY_PATH.exists():
+        with IDENTITY_PATH.open(encoding="utf-8") as f:
             cfg = json.load(f)
             mac = cfg.get("bike_mac")
             if isinstance(mac, str) and mac:
@@ -46,21 +46,13 @@ except PermissionError:
     os.makedirs("/tmp/BikeCon", exist_ok=True)
 
 # --- 日志配置 ---
-# 日志目录遵循 FHS 标准，放在 /var/log/BikeCon/
-LOG_DIR = "/var/log/BikeCon"
-RAM_LOG_PATH = os.path.join(LOG_DIR, "bike_raw_data.log")
-PERSISTENT_LOG_DIR = LOG_DIR
-
-# 确保日志目录存在，如果不存在则创建（需要脚本有写权限）
-try:
-    os.makedirs(LOG_DIR, exist_ok=True)
-except PermissionError:
-    print(f"[Warning] 无法创建日志目录 {LOG_DIR}，请确保运行用户有权限或预先创建此目录")
-    # 降级方案：使用 /tmp 作为备用
-    LOG_DIR = "/tmp/BikeCon"
-    RAM_LOG_PATH = os.path.join(LOG_DIR, "bike_raw_data.log")
-    PERSISTENT_LOG_DIR = LOG_DIR
-    os.makedirs(LOG_DIR, exist_ok=True)
+RAM_DISK_DIR = "/dev/shm/BikeCon" 
+os.makedirs(RAM_DISK_DIR, exist_ok=True)
+# 内存中的临时日志路径
+RAM_LOG_PATH = os.path.join(RAM_DISK_DIR, "bike_raw_data.log")
+# 磁盘上的持久化目录
+PERSISTENT_LOG_DIR = "/var/log/BikeCon"
+os.makedirs(PERSISTENT_LOG_DIR, exist_ok=True)
 
 MAX_LOG_SIZE = 2 * 1024 * 1024 
 BACKUP_COUNT = 1
@@ -76,14 +68,20 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 
 def save_logs_to_disk():
-    print("[Log] 正在将内存日志回写到 SD 卡...")
+    print("[Log] 正在将内存日志写入磁盘...")
     try:
+        # 获取内存中所有的日志文件（包括旋转产生的 .1, .2 等）
         for temp_file in glob.glob(f"{RAM_LOG_PATH}*"):
             if os.path.exists(temp_file):
                 filename = os.path.basename(temp_file)
                 dest_path = os.path.join(PERSISTENT_LOG_DIR, filename)
+                
+                # 核心检查：如果源路径和目标路径相同，则跳过
+                if os.path.abspath(temp_file) == os.path.abspath(dest_path):
+                    continue
+                    
                 shutil.copy2(temp_file, dest_path)
-                print(f"[Log] 已保存: {dest_path}")
+                print(f"[Log] 已同步到磁盘: {dest_path}")
     except Exception as e:
         print(f"[Log] 保存失败: {e}")
 
@@ -199,34 +197,24 @@ class BikeBridge:
                 # Windows 的事件循环不支持 add_signal_handler
                 pass
 
-        while True:
-            try:
-                success = await self.client.connect()
-
-                if success:
-                    print(f"\n[Bridge] 驱动启动成功...")
-                    while self.client.running and not stop_event.is_set():
-                        await asyncio.sleep(1)
-                    print(f"\n[Bridge] 驱动停止运行 (Running=False or signal)")
-                else:
-                    print(f"[Bridge] 启动失败，无法找到设备或连接被拒绝")
-
-            except Exception as e:
-                print(f"[Bridge] 运行时严重错误: {e}")
-
-            if stop_event.is_set():
-                break
-
-            print("[Bridge] 5秒后尝试重启服务...")
-            await asyncio.sleep(5)
-
-        # 在退出前断开蓝牙
         try:
-            await self.client.disconnect(is_retry=False)
-        except Exception as e:
-            print(f"[Bridge] 退出断开时发生错误: {e}")
-        print("[Bridge] 已安全退出")
+            # 【修改点 1】只需要调用一次 start()。
+            # 驱动内部的看门狗会自动接管：尝试连接、断线重连等所有脏活累活。
+            await self.client.start()
+            print(f"\n[Bridge] 驱动已启动...")
 
+            # 【修改点 2】抛弃原先的 while True 和 sleep 循环。
+            # 直接挂起主协程，直到收到终止信号 (Ctrl+C 或 systemctl stop)
+            await stop_event.wait()
+
+        except Exception as e:
+            print(f"[Bridge] 运行时严重错误: {e}")
+            
+        finally:
+            # 【修改点 3】在退出前调用统一的 stop() 接口，安全清理所有任务和蓝牙连接
+            print("[Bridge] 正在停止蓝牙驱动...")
+            await self.client.stop()
+            print("[Bridge] 已安全退出")
 
 if __name__ == "__main__":
     bridge = BikeBridge()

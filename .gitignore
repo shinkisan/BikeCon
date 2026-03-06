@@ -5,6 +5,7 @@ __pycache__/
 c2lite/
 test_scripts/
 identity.json
+identity.json.bak
 doc/
 # Internal prompts and planning documents
 .github/prompts/

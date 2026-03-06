@@ -1,12 +1,15 @@
 import asyncio
 import time
 import struct
+import json
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Callable, Any
 from pathlib import Path
-import json
-from bleak import BleakClient, BleakScanner
+from bleak import BleakClient
+from bleak.exc import BleakError
+
+IDENTITY_PATH = Path("/etc/BikeCon/identity.json")
 
 class BikeStatus(Enum):
     IDLE = 0
@@ -41,13 +44,17 @@ class BikeClient:
     SESSION_IDLE = bytes.fromhex("0000")
     SESSION_ACTIVE = bytes.fromhex("0400")
     FIXED_BYTE = bytes.fromhex("01")
-    CMD_2F31 = b'\xb3\x31\x2f\x31'  # "1/1"
-    CMD_2F33 = b'\xb3\x30\x2f\x33'  # "0/3"
-    CMD_2F37 = b'\xb5\x31\x30\x36\x2f\x37'  # "106/7"
-    CMD_2F34 = b'\xb5\x31\x30\x36\x2f\x34'  # "106/4"
-    CMD_2F38 = b'\xb5\x31\x30\x36\x2f\x38'  # "106/8"
+    DST_SUB_SYNC = bytes.fromhex("5503")
+    SESSION_SYNC = bytes.fromhex("0300")
+    CMD_2F31 = b'\xb3\x31\x2f\x31'
+    CMD_2F33 = b'\xb3\x30\x2f\x33'
+    CMD_2F31_SHORT = b'\xb3\x30\x2f\x31'          # 对应 "0/1"  
+    CMD_2F33_LONG  = b'\xb5\x31\x30\x36\x2f\x33'  # 对应 "106/3"
+    CMD_2F37 = b'\xb5\x31\x30\x36\x2f\x37'
+    CMD_2F34 = b'\xb5\x31\x30\x36\x2f\x34'
     FRAME_MAGIC = b'\xA5\xA5\xA0'
     HEARTBEAT_INTERVAL = 1.0
+    DATA_TIMEOUT_LIMIT = 20.0
 
     def __init__(self, 
                  mac_address: str, 
@@ -58,158 +65,118 @@ class BikeClient:
         self.status_callback = status_callback
         
         self.client: Optional[BleakClient] = None
-        self.running = False  # 全局运行开关 (用户意图)
+        self.running = False  
         self._seq = 0
-        self._app_counter = 0xA4  # Start from 0xA4 as per logs
+        self._app_counter = 0xA4 
         self._current_status = BikeStatus.IDLE
-        self._last_data_time = 0.0
+        self._last_data_time = time.time()
         self._last_calories = 0
         
-        # Identity data
-        self.phone_mac = ""
-        self.uuid1 = ""
-        self.uuid2 = ""
-        
-        # 任务句柄
+        # 任务控制
         self._watchdog_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
-
-        # Load identity and build packets
+        self._tx_worker_task: Optional[asyncio.Task] = None
+        self._tx_queue = asyncio.Queue()
+        
+        # Identity data
+        self.client_id = ""
+        self.uuid1 = ""
+        self.uuid2 = ""
         self._load_identity()
-        self._build_handshake_packets()
+
+    def _log(self, msg: str, level: str = None):
+        """统一日志打印"""
+        print(f"[BikeDriver] {msg}")
 
     def _load_identity(self):
-        """
-        Load identity data from identity.json.
-        """
         try:
-            identity_path = Path(__file__).parent / "identity.json"
-            if identity_path.exists():
-                identity = json.loads(identity_path.read_text(encoding="utf-8"))
-                self.phone_mac = identity.get("phone_mac", "").replace(":", "").lower()
+            if IDENTITY_PATH.exists():
+                identity = json.loads(IDENTITY_PATH.read_text(encoding="utf-8"))
+                self.client_id = identity.get("client_id", "").replace(":", "").lower()
                 self.uuid1 = identity.get("uuid1", "")
                 self.uuid2 = identity.get("uuid2", "")
             else:
                 raise ValueError("identity.json not found")
         except Exception as e:
-            raise ValueError(f"[BikeDriver] Failed to load identity.json: {e}")
+            raise ValueError(f"Failed to load identity.json: {e}")
         
-        if not all([self.phone_mac, self.uuid1, self.uuid2]):
-            raise ValueError("[BikeDriver] CRITICAL: Missing required fields in identity.json")
+        if not all([self.client_id, self.uuid1, self.uuid2]):
+            raise ValueError("CRITICAL: Missing required fields in identity.json")
+        self._log("Identity loaded successfully.")
 
-    def _build_handshake_packets(self):
-        """
-        Build handshake packets dynamically from identity data.
-        """
-        self.HANDSHAKE_PACKETS = []
+    # ================= 协议打包与解析层 =================
+
+    async def _send_handshake(self):
+        self._log("构建并发送动态握手包...")
         
-        # Pkt1: 2f31 with phone MAC
-        extra1 = bytes.fromhex(self.phone_mac) + b'\x00'
-        payload1 = self._build_payload(self.CMD_2F31, extra=extra1)
-        self.HANDSHAKE_PACKETS.append(self._build_frame(payload1))
+        # Pkt1: 手机宣告 Client ID (16字节 ASCII) [cite: 32, 35]
+        extra1 = self.client_id.encode('ascii') + b'\x00'
+        await self._send_command(self.CMD_2F31, extra=extra1, is_handshake=True)
         
-        # Pkt2: 2f33 empty
-        payload2 = self._build_payload(self.CMD_2F33)
-        self.HANDSHAKE_PACKETS.append(self._build_frame(payload2))
+        # Pkt2: 2f33 短查询 [cite: 32]
+        await self._send_command(self.CMD_2F33, is_handshake=True)
         
-        # Pkt3: 2f31 empty
-        payload3 = self._build_payload(self.CMD_2F31)
-        self.HANDSHAKE_PACKETS.append(self._build_frame(payload3))
+        # Pkt3: 0/1 格式重宣告 (对齐重放包) [cite: 32]
+        await self._send_command(self.CMD_2F31_SHORT, is_handshake=True)
         
-        # Pkt4: 2f33 with UUIDs and timestamp
+        # Pkt4: 切换到同步状态 (Session 0300, DstSub 5503) 
         timestamp = int(time.time())
-        uuid1_bytes = bytes.fromhex(self.uuid1)
-        uuid2_bytes = bytes.fromhex(self.uuid2)
+        uuid1_bytes = self.uuid1.encode('ascii') # 24 字节 [cite: 35]
+        uuid2_bytes = self.uuid2.encode('ascii') # 16 字节 [cite: 36]
+        
         extra4 = (
             b'\x0a\x18' + uuid1_bytes + 
             b'\x12\x10' + uuid2_bytes + 
             b'\x1d' + struct.pack("<I", timestamp) + 
-            b'\x20\xcb\xcc\xed\xcb\x06\x53\x2b'
+            b'\x20\xcb\xcc\xed\xcb\x06'
         )
-        payload4 = self._build_payload(self.CMD_2F33, field_cnt=2, extra=extra4)
-        self.HANDSHAKE_PACKETS.append(self._build_frame(payload4))
         
-        print(f"[BikeDriver] ✓ Handshake packets built: {len(self.HANDSHAKE_PACKETS)} packet(s)")
+        await self._send_command(
+            self.CMD_2F33_LONG,
+            session=self.SESSION_SYNC,
+            field_cnt=2, 
+            extra=extra4, 
+            is_handshake=True,
+            dst_sub=self.DST_SUB_SYNC
+        )
+        self._log("握手序列发送完毕。")
 
-    def _build_payload(self, cmd_str, session=None, field_cnt=0, extra=b''):
-        """
-        Build payload for a packet.
-        """
-        if session is None:
-            session = self.SESSION_IDLE
-        app_cnt = struct.pack("<H", self._next_app_counter())
+    async def _send_command(self, cmd_str: bytes, session=None, field_cnt=0, extra=b'', is_handshake=False, dst_sub=None):
+        """立即构建并向底层写入一帧数据 [cite: 13]"""
+        if not self.client or not self.client.is_connected:
+            return
+            
+        if session is None: session = self.SESSION_IDLE
+        # 如果没传 dst_sub，则默认使用原有的 5501 
+        if dst_sub is None: dst_sub = self.DST_SUB_PHONE
+        
+        # 构建 Payload [cite: 21]
+        cnt = self._app_counter
+        self._app_counter = (self._app_counter + 257) & 0xFFFF # 应用层计数器每包递增 257 [cite: 22, 99]
+        app_cnt = struct.pack("<H", cnt)
+        
         payload = (
-            self.SRC_ID_PHONE + self.DST_SUB_PHONE + self.MSG_TYPE + app_cnt + 
+            self.SRC_ID_PHONE + dst_sub + self.MSG_TYPE + app_cnt + 
             session + bytes([field_cnt]) + self.FIXED_BYTE + cmd_str
         )
-        if extra:
-            payload += b'\xFF' + extra
-        return payload
-
-    def _next_app_counter(self):
-        """
-        Get next app counter, increment by 257, uint16 wrap.
-        """
-        cnt = self._app_counter
-        self._app_counter = (self._app_counter + 257) & 0xFFFF
-        return cnt
-
-    def _build_frame(self, payload):
-        """
-        Build complete frame with magic, seq, length, payload, crc.
-        """
+        if extra: payload += b'\xFF' + extra # 附加字段前缀 
+            
+        # 构建帧并计算 CRC16 [cite: 13, 19]
         body = self.FRAME_MAGIC + struct.pack("B", self._seq) + struct.pack("<H", len(payload)) + payload
         crc = self._crc16(body)
         self._seq = (self._seq + 1) % 256
-        return body + struct.pack("<H", crc)
-
-    def _load_config(self):
-        """
-        Load device-specific handshake and heartbeat payload from config.json.
-        Raises ValueError if required fields are missing.
-        """
+        pkt = body + struct.pack("<H", crc)
+        
+        if is_handshake:
+            print(f"[Handshake Debug] TX -> {pkt.hex()}")
+        
         try:
-            cfg_path = Path(__file__).parent / "config.json"
-            if cfg_path.exists():
-                cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-                hs = cfg.get("handshake_packets")
-                hb = cfg.get("heartbeat_payload")
-                
-                if isinstance(hs, list) and hs:
-                    # Convert hex strings to bytes
-                    self.HANDSHAKE_PACKETS = [bytes.fromhex(x) for x in hs if isinstance(x, str)]
-                
-                if isinstance(hb, str) and hb:
-                    self.HEARTBEAT_PAYLOAD = hb
-        except json.JSONDecodeError as e:
-            raise ValueError(f"[BikeDriver] config.json is invalid JSON: {e}")
+            await self.client.write_gatt_char(self.CHAR_UUID, pkt, response=False)
         except Exception as e:
-            raise ValueError(f"[BikeDriver] Failed to load config.json: {e}")
-        
-        # Ensure both required fields are loaded
-        if not self.HANDSHAKE_PACKETS:
-            raise ValueError(
-                "[BikeDriver] CRITICAL: 'handshake_packets' not found or empty in config.json. "
-                "This field is required and contains device-specific Bluetooth handshake data. "
-                "Please configure it locally in config.json (add to .gitignore to keep it private)."
-            )
-        if not self.HEARTBEAT_PAYLOAD:
-            raise ValueError(
-                "[BikeDriver] CRITICAL: 'heartbeat_payload' not found or empty in config.json. "
-                "This field is required and contains device-specific heartbeat data. "
-                "Please configure it locally in config.json (add to .gitignore to keep it private)."
-            )
-        
-        # Log successful configuration load
-        print(f"[BikeDriver] ✓ Configuration loaded successfully from config.json")
-        print(f"[BikeDriver]   - Handshake packets: {len(self.HANDSHAKE_PACKETS)} packet(s)")
-        for i, pkt in enumerate(self.HANDSHAKE_PACKETS):
-            hex_str = pkt.hex()
-            print(f"[BikeDriver]     [{i+1}] {len(pkt)} bytes: {hex_str}")
-        hb_hex = self.HEARTBEAT_PAYLOAD
-        print(f"[BikeDriver]   - Heartbeat payload: {len(hb_hex)//2} bytes: {hb_hex}")
+            self._log(f"Write failed: {e}")
 
     def _read_varint(self, data: bytes, start_idx: int):
+        """【修复】增加 varint 读取边界保护，防脏数据死循环"""
         res = 0
         shift = 0
         count = 0
@@ -217,13 +184,12 @@ class BikeClient:
             byte = data[i]
             res |= (byte & 0x7F) << shift
             count += 1
-            if not (byte & 0x80):
+            if not (byte & 0x80) or count >= 10:  # 最大读取 10 字节 (64位)
                 break
             shift += 7
         return res, count
 
     def _write_varint(self, value: int) -> bytes:
-        """Encode integer as varint."""
         result = []
         while value >= 0x80:
             result.append((value & 0x7F) | 0x80)
@@ -241,274 +207,208 @@ class BikeClient:
                 crc &= 0xFFFF
         return crc
 
-    def _is_session_end_packet(self, data: bytearray) -> bool:
-        """Check if data contains session end command (2f34)."""
-        # Look for CMD_2F34 in payload
-        try:
-            if len(data) < 10: return False
-            # Skip frame header, find payload
-            payload_start = 5  # After magic(3) + seq(1) + len(2)
-            if payload_start + len(self.CMD_2F34) <= len(data) - 2:  # -2 for CRC
-                payload = data[payload_start:-2]
-                return self.CMD_2F34 in payload
-        except:
-            pass
-        return False
-
-    async def _send_session_end_ack(self):
-        """Send session end acknowledgment."""
-        try:
-            payload = self._build_payload(self.CMD_2F34, extra=b'\x01')  # field1=1
-            pkt = self._build_frame(payload)
-            await self.client.write_gatt_char(self.CHAR_UUID, pkt, response=False)
-            print("[BikeDriver] Sent session end ACK")
-        except Exception as e:
-            print(f"[BikeDriver] Failed to send session end ACK: {e}")
-
-    def _build_heartbeat_idle(self):
-        """Build IDLE heartbeat payload (19 bytes)."""
-        return self._build_payload(self.CMD_2F37, session=self.SESSION_ACTIVE)
-
-    def _build_heartbeat_active(self, calories: int):
-        """Build ACTIVE heartbeat payload (23 bytes) with dynamic calories."""
-        varint_calories = self._write_varint(calories * 1000)
-        extra = b'\x20' + varint_calories  # field4
-        return self._build_payload(self.CMD_2F37, session=self.SESSION_ACTIVE, field_cnt=0, extra=extra)
-
-    def _build_packet(self, payload_hex: str) -> bytes:
-        payload = bytes.fromhex(payload_hex)
-        header = b'\xA5\xA5\xA0'
-        body = header + struct.pack("B", self._seq) + struct.pack("<H", len(payload)) + payload
-        crc = self._crc16(body)
-        self._seq = (self._seq + 1) % 256
-        return body + struct.pack("<H", crc)
+    # ================= 业务与数据处理层 =================
 
     def _notification_handler(self, sender: Any, data: bytearray):
-        # print(f"[Notification] Raw data: {data.hex()}")
-        # 1. 喂狗
+        # 喂狗
         self._last_data_time = time.time()
 
-        # 2. 检查是否是会话结束包 (2f34)
-        if self._is_session_end_packet(data):
-            asyncio.create_task(self._send_session_end_ack())
+        # Session 结束包处理
+        if self.CMD_2F34 in data:
+            self._log("Session end packet received. Queuing ACK.")
+            # 【修复】将任务推入队列，避免在回调中直接 create_task 失控
+            self._tx_queue.put_nowait(("ACK", None))
             return
 
-        # 3. 状态判定
+        # 状态判定
         magic_idx = data.find(self.MAGIC_KEY)
         new_status = BikeStatus.ACTIVE if magic_idx != -1 else BikeStatus.IDLE
 
-        # 4. 状态回调 (仅变化时触发)
         if new_status != self._current_status:
             old_status = self._current_status
             self._current_status = new_status
             if self.status_callback:
                 self.status_callback(old_status, new_status)
 
-        # 4. 数据解析
+        # 数据解析
         bike_data = None
-
         if new_status == BikeStatus.ACTIVE:
             try:
-                # 截取 Payload (排除 CRC)
                 start_ptr = magic_idx + 2
-                # 安全检查：长度不够直接返回
                 if len(data) >= start_ptr + 2:
                     payload = data[start_ptr:-2]
                     res = {'rpm': 0, 'power': 0, 'duration': 0, 'resistance': 0, 'calories': 0, 'status_code': 0}
                     i = 0
-                    
                     while i < len(payload):
-                        # 防止越界读取
                         if i + 1 >= len(payload): break
-                        
                         tag = payload[i]
                         val, bytes_used = self._read_varint(payload, i + 1)
-
                         if tag == self.TAG_STATUS:     res['status_code'] = val
                         elif tag == self.TAG_DURATION: res['duration'] = val
                         elif tag == self.TAG_CALORIES: res['calories'] = val
                         elif tag == self.TAG_RESISTANCE: res['resistance'] = val
                         elif tag == self.TAG_RPM:      res['rpm'] = val
                         elif tag == self.TAG_POWER:    res['power'] = val
-
                         i += (1 + bytes_used)
 
-                    bike_data = BikeData(
-                        rpm=res['rpm'], power=res['power'], duration=res['duration'],
-                        resistance=res['resistance'], calories=res['calories'],
-                        status_code=res['status_code'], raw_data=data.hex()
-                    )
-                    # Update last calories for heartbeat
+                    bike_data = BikeData(**res, raw_data=data.hex())
                     self._last_calories = res['calories']
             except Exception as e:
-                print(f"[Parser Error] {e}")
-                # 解析失败也要返回原始数据
-                bike_data = BikeData(raw_data=data.hex())
+                self._log(f"Parser Error: {e}", "ERROR")
 
-        # 如果没有成功解析出 Active 数据，或者是 IDLE 状态
         if bike_data is None:
             bike_data = BikeData(raw_data=data.hex())
 
-        # 5. 统一触发回调 (只触发一次)
         self.data_callback(bike_data)
 
+    # ================= 核心并发任务控制层 =================
+
+    async def _tx_worker(self):
+        self._log("TX Worker started.")
+        while self.running:
+            try:
+                msg_type, payload = await asyncio.wait_for(self._tx_queue.get(), timeout=1.0)
+                if msg_type == "ACK":
+                    await self._send_command(self.CMD_2F34, extra=b'\x01')
+                    self._log("Session end ACK sent.")
+                self._tx_queue.task_done()
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                self._log(f"TX Worker error: {e}", "ERROR")
+        self._log("TX Worker stopped.")
+
     async def _heartbeat_loop(self):
-        print("[Heartbeat] Loop started.")
+        self._log("Heartbeat Loop started.")
         while self.running and self.client and self.client.is_connected:
             try:
                 if self._current_status == BikeStatus.IDLE:
-                    payload = self._build_heartbeat_idle()
+                    await self._send_command(self.CMD_2F37, session=self.SESSION_ACTIVE)
                 else:
-                    payload = self._build_heartbeat_active(self._last_calories)
-                pkt = self._build_frame(payload)
-                await self.client.write_gatt_char(self.CHAR_UUID, pkt, response=False)
+                    varint_cal = self._write_varint(self._last_calories * 1000)
+                    await self._send_command(self.CMD_2F37, session=self.SESSION_ACTIVE, field_cnt=0, extra=b'\x20' + varint_cal)
                 await asyncio.sleep(self.HEARTBEAT_INTERVAL)
-            except Exception:
-                # 发送失败通常意味着连接断了，不需要这里处理，交给看门狗即可
+            except Exception as e:
+                self._log(f"Heartbeat send failed: {e}", "WARN")
                 break
-        print("[Heartbeat] Loop stopped.")
+        self._log("Heartbeat Loop stopped.")
 
     async def _watchdog_loop(self):
-        print("[Watchdog] Guard started.")
-        # 此时建议用较长的超时，避免握手期误杀
-        TIMEOUT_LIMIT = 20.0
-        
+        self._log("Watchdog started.")
         while self.running:
             await asyncio.sleep(2.0)
+            if not self.running: break
             
-            # 标记是否需要重连
-            should_reconnect = False
+            is_disconnected = not self.client or not self.client.is_connected
+            is_timeout = (time.time() - self._last_data_time) > self.DATA_TIMEOUT_LIMIT
             
-            # 情况 A: 客户端对象都没了，或者底层断开了
-            if not self.client or not self.client.is_connected:
-                print("[Watchdog] ⚠️ Connection lost detected!")
-                should_reconnect = True
-            
-            # 情况 B: 连接着，但是很久没收到数据了
-            elif time.time() - self._last_data_time > TIMEOUT_LIMIT:
-                print(f"[Watchdog] ⚠️ Data timeout! Last seen: {time.time() - self._last_data_time:.1f}s ago")
-                should_reconnect = True
+            if is_disconnected or is_timeout:
+                reason = "Disconnected" if is_disconnected else f"Timeout ({time.time() - self._last_data_time:.1f}s)"
+                self._log(f"Connection lost detected. Reason: {reason}", "WARN")
                 
-            # 执行重连流程
-            if should_reconnect:
-                # 1. UI 归零
-                self._current_status = BikeStatus.IDLE
-                # 通知外部正在重连
-                try:
-                    self.data_callback(BikeData(rpm=0, power=0, raw_data="RECONNECTING"))
-                    if self.status_callback:
-                        self.status_callback(BikeStatus.ACTIVE, BikeStatus.IDLE)
-                except Exception as e:
-                    print(f"[Watchdog] Callback error: {e}")
+                # 通知 UI 掉线重连
+                if self._current_status != BikeStatus.IDLE:
+                    old_status = self._current_status
+                    self._current_status = BikeStatus.IDLE
+                    if self.status_callback: self.status_callback(old_status, BikeStatus.IDLE)
+                self.data_callback(BikeData(raw_data="RECONNECTING"))
                 
-                # 2. 清理旧连接 (is_retry=True)
-                await self.disconnect(is_retry=True)
+                # 清理旧连接
+                await self._disconnect_internal()
                 
-                # 3. 自动重连循环
-                print("[Watchdog] Entering reconnection loop...")
+                # 重连循环
+                self._log("Entering reconnection loop...")
                 while self.running:
-                    print("[Watchdog] Retrying connection...")
-                    if await self.connect():
-                        print("[Watchdog] Reconnected successfully! 🎉")
+                    if await self._connect_internal():
+                        self._log("Reconnected successfully! 🎉")
                         break
                     
-                    print("[Watchdog] Connect failed. Retrying in 5s...")
-                    # 等待期间也要检测 running 状态
+                    self._log("Reconnect failed. Waiting 5s before next attempt...")
                     for _ in range(5):
                         if not self.running: break
                         await asyncio.sleep(1.0)
-                
-                # 如果重连循环是因为 running=False 而退出的
-                if not self.running:
-                    break
+                        
+        self._log("Watchdog stopped.")
+
+    # ================= 暴露的生命周期 API =================
+
+    async def start(self):
+        """统一的启动入口，只需调用一次"""
+        if self.running: return
+        self._log("Starting Bike Driver...")
+        self.running = True
+        self._last_data_time = time.time()
         
-        print("[Watchdog] Guard stopped.")
+        # 仅启动看门狗，让看门狗去负责建立第一通连接
+        self._watchdog_task = asyncio.create_task(self._watchdog_loop())
 
-    async def connect(self) -> bool:
-        # 防止重复连接
-        if self.client and self.client.is_connected:
-            return True
+    async def stop(self):
+        """统一的停止入口，安全退出所有协程和连接"""
+        self._log("Stopping Bike Driver...")
+        self.running = False
+        
+        if self._watchdog_task:
+            self._watchdog_task.cancel()
+            self._watchdog_task = None
+            
+        await self._disconnect_internal()
+        self._log("Driver completely stopped.")
 
-        print(f"[BikeDriver] Connecting to {self.mac_address}...")
+    async def _connect_internal(self) -> bool:
+        """内部的连接过程封装，仅负责建立链路和初始化通道"""
+        if self.client and self.client.is_connected: return True
+        
+        self._log(f"Connecting to {self.mac_address}...")
         try:
-            self.running = True 
-            
-            # 【核心修改1】直接通过 MAC 地址创建客户端，跳过扫描步骤
-            # 这能有效避免 org.bluez.Error.InProgress 错误
-            self.client = BleakClient(self.mac_address)
-            
-            # 【核心修改2】增加连接超时控制 (20秒)
-            # 如果底层卡住，这里会抛出 asyncio.TimeoutError
-            await asyncio.wait_for(self.client.connect(), timeout=20.0)
+            self.client = BleakClient(self.mac_address, timeout=15.0)
+            await self.client.connect()
             
             if self.client.is_connected:
-                print(f"[BikeDriver] Connected directly to MAC!")
-                
-                # 1. 刚连上时喂一次狗 (防止初始化期间被看门狗误杀)
+                self._log("Connected at BLE layer.")
                 self._last_data_time = time.time()
+
+                self._app_counter = 0xA400  # 对齐重放包起始值 
+                self._seq = 0               # 传输层 Seq 也要归零 [cite: 16]
                 
                 await self.client.start_notify(self.CHAR_UUID, self._notification_handler)
                 
-                # 发送握手
-                for pkt in self.HANDSHAKE_PACKETS:
-                    await self.client.write_gatt_char(self.CHAR_UUID, pkt, response=False)
-                
-                # 2. 握手结束后再次喂狗 (重置计时器)
+                # 发送动态握手包
+                await self._send_handshake()
                 self._last_data_time = time.time()
                 
-                # 启动心跳
-                if self._heartbeat_task: self._heartbeat_task.cancel()
+                # 启动辅助任务
                 self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-                
-                # 启动看门狗 (注意：确保看门狗不会重复启动)
-                if self._watchdog_task is None or self._watchdog_task.done():
-                    self._watchdog_task = asyncio.create_task(self._watchdog_loop())
+                self._tx_worker_task = asyncio.create_task(self._tx_worker())
                 
                 return True
-                
         except Exception as e:
-            print(f"[BikeDriver] Connect Error: {e}")
-            # 【核心修改3】确保清理干净
-            if self.client:
-                try:
-                    await self.client.disconnect()
-                except:
-                    pass
-                self.client = None
+            self._log(f"Connect internal error: {e}", "ERROR")
+            await self._disconnect_internal()
+            await asyncio.sleep(1.0) # 让 BlueZ 缓一缓
             
-            # 【核心修改4】失败后强制等待1秒，让 BlueZ 释放资源
-            # 这对防止连续的 InProgress 错误非常关键
-            await asyncio.sleep(1.0)
-                
         return False
 
-    async def disconnect(self, is_retry=False):
-        """
-        断开连接。
-        :param is_retry: True=重连过程中的清理(保留看门狗和运行状态); False=彻底停止(杀掉一切)
-        """
-        if not is_retry:
-            print("[BikeDriver] Stopping driver completely...")
-            self.running = False # 这会让看门狗循环退出
-            if self._watchdog_task:
-                self._watchdog_task.cancel()
-                try: await self._watchdog_task 
-                except: pass
-                self._watchdog_task = None
-        else:
-            print("[BikeDriver] temporary disconnect for retry...")
-
-        # 停止心跳
+    async def _disconnect_internal(self):
+        """内部的资源清理过程封装"""
+        self._log("Cleaning up connection resources...")
+        
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
-            try: await self._heartbeat_task
-            except: pass
             self._heartbeat_task = None
+            
+        if self._tx_worker_task:
+            self._tx_worker_task.cancel()
+            self._tx_worker_task = None
+            
+        # 清空发送队列
+        while not self._tx_queue.empty():
+            self._tx_queue.get_nowait()
+            self._tx_queue.task_done()
 
-        # 断开蓝牙
         if self.client:
-            try: await self.client.disconnect()
-            except: pass
-            self.client = None
-        
-        print("[BikeDriver] Disconnected.")
+            try:
+                await self.client.disconnect()
+            except Exception as e:
+                self._log(f"Disconnect error ignored: {e}", "WARN")
+            finally:
+                self.client = None

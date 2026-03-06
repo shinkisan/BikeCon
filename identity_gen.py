@@ -15,20 +15,20 @@ def extract_to_auth_json(file_path):
 
     display_filter = '(bthci_acl.src.name contains "Keep" || bthci_acl.dst.name contains "Keep") && btatt'
     
+    # 把 phone_mac 替换成 client_id
     auth_data = {
         "bike_name": "Unknown",
         "bike_mac": "Unknown",
-        "phone_mac": "Unknown",
+        "client_id": "Unknown", 
         "uuid1": "Unknown", 
         "uuid2": "Unknown"  
     }
 
-    # --- 2. 在外层添加 try-except 拦截解析引擎崩溃 ---
+    # --- 在外层添加 try-except 拦截解析引擎崩溃 ---
     try:
         cap = pyshark.FileCapture(file_path, display_filter=display_filter, keep_packets=False)
         
         # 当遍历 cap 时，pyshark 才会真正驱动 tshark 去读取文件
-        # 如果文件不是合法的二进制抓包格式，这里会抛出异常
         for pkt in cap:
             try:
                 src_name = getattr(pkt.bthci_acl, 'src_name', 'Unknown')
@@ -36,31 +36,49 @@ def extract_to_auth_json(file_path):
                 dst_name = getattr(pkt.bthci_acl, 'dst_name', 'Unknown')
                 dst_mac = getattr(pkt.bthci_acl, 'dst_bd_addr', getattr(pkt.bluetooth, 'dst', 'Unknown'))
 
+                # 增加方向判断标志
+                is_from_phone = False
+
                 if "Keep" in src_name:
                     auth_data["bike_name"] = src_name
                     auth_data["bike_mac"] = src_mac.upper()
-                    auth_data["phone_mac"] = dst_mac.lower()
                 elif "Keep" in dst_name:
                     auth_data["bike_name"] = dst_name
                     auth_data["bike_mac"] = dst_mac.upper()
-                    auth_data["phone_mac"] = src_mac.lower()
+                    is_from_phone = True  # 目的地是单车，说明是手机发出的请求
 
                 value_hex = getattr(pkt.btatt, 'value', '').replace(':', '').lower()
+                
+                # 1. 提取 UUID (来自 2f33 包)
                 if "a5a5a0" in value_hex and "2f33" in value_hex:
                     try:
                         ascii_str = bytes.fromhex(value_hex).decode('ascii', errors='ignore')
                         
                         u1 = re.search(r'[a-f0-9]{24}', ascii_str)
-                        if u1: auth_data["uuid1"] = u1.group(0)
+                        if u1 and auth_data["uuid1"] == "Unknown": 
+                            auth_data["uuid1"] = u1.group(0)
                         
                         temp_str = re.sub(r'[a-f0-9]{24}', '', ascii_str)
                         u2 = re.search(r'[a-f0-9]{16}', temp_str)
-                        if u2: auth_data["uuid2"] = u2.group(0)
+                        if u2 and auth_data["uuid2"] == "Unknown": 
+                            auth_data["uuid2"] = u2.group(0)
                     except:
                         pass
+                
+                # 2. 提取 Client ID (来自 2f31 包)
+                # 修复核心：必须是手机发出的包，且只有当 client_id 为 Unknown 时才写入
+                if is_from_phone and auth_data["client_id"] == "Unknown":
+                    if "a5a5a0" in value_hex and "2f31" in value_hex:
+                        try:
+                            # 匹配规律: b3 30/31 2f 31 ff + 32个Hex(即16字节文本) + 00
+                            match_client = re.search(r'b33[01]2f31ff([0-9a-f]{32})00', value_hex)
+                            if match_client:
+                                client_str = bytes.fromhex(match_client.group(1)).decode('ascii', errors='ignore')
+                                auth_data["client_id"] = client_str
+                        except:
+                            pass
 
             except Exception:
-                # 忽略单个数据包解析时可能出现的局部异常
                 continue
                 
         cap.close()

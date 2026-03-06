@@ -54,14 +54,12 @@ systemctl stop BikeCon-bike.service 2>/dev/null || true
 systemctl stop BikeCon-joycon.service 2>/dev/null || true
 systemctl stop BikeCon-web.service 2>/dev/null || true
 systemctl stop BikeCon-mixer.service 2>/dev/null || true
-systemctl stop BikeCon-hardware.service 2>/dev/null || true
 echo "  Services stopped."
 
 systemctl disable BikeCon-bike.service 2>/dev/null || true
 systemctl disable BikeCon-joycon.service 2>/dev/null || true
 systemctl disable BikeCon-web.service 2>/dev/null || true
 systemctl disable BikeCon-mixer.service 2>/dev/null || true
-systemctl disable BikeCon-hardware.service 2>/dev/null || true
 echo "  Services disabled."
 echo ""
 
@@ -94,9 +92,9 @@ echo ""
 
 # Step 5: Preserve configuration and logs
 echo "[Step 5] Preserving user data..."
-echo "  ${GREEN}✓ /etc/BikeCon/config.json preserved${NC}"
-echo "  ${GREEN}✓ /etc/BikeCon/identity.json preserved (sensitive credentials)${NC}"
-echo "  ${GREEN}✓ /var/log/BikeCon/ preserved${NC}"
+echo -e "  ${GREEN}✓ /etc/BikeCon/config.json preserved${NC}"
+echo -e "  ${GREEN}✓ /etc/BikeCon/identity.json preserved (sensitive credentials)${NC}"
+echo -e "  ${GREEN}✓ /var/log/BikeCon/ preserved${NC}"
 echo ""
 
 echo "=========================================="
@@ -112,6 +110,3 @@ echo "  /var/run/BikeCon/ - Runtime files"
 echo ""
 echo "To remove configuration and logs as well, run:"
 echo "  sudo rm -rf /etc/BikeCon /var/log/BikeCon /var/run/BikeCon"
-echo ""
-echo "WARNING: identity.json contains sensitive credentials. Keep it secure if preserving!"
-echo ""

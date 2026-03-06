@@ -8,12 +8,13 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 
-# --- 配置路径 ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+# 配置路径
+BASE_DIR = Path("/opt/BikeCon")
+CONFIG_FILE = Path("/etc/BikeCon/config.json")
 
-# 定义 Socket 路径 (遵循 FHS 标准)
+# Socket 路径
 WEBAPP_SOCKET = "/var/run/BikeCon/webapp.sock"  # 接收来自 bike_service 的数据
 MIXER_SOCKET = "/var/run/BikeCon/mixer.sock"    # 发送指令给 mixer (控制源切换等)
 
@@ -163,7 +164,6 @@ async def websocket_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     try:
-        # 生产环境建议使用: uvicorn webapp:app --host 0.0.0.0 --port 8000 --workers 1
         uvicorn.run(app, host="0.0.0.0", port=8000)
     except KeyboardInterrupt:
         pass

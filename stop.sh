@@ -40,11 +40,11 @@ stop_service() {
 
 # Stop services in reverse order to avoid dependency issues
 
-# Step 5: Stop web service first (web interface)
+# Step 1: Stop web service first (web interface)
 echo "Step 1: Stopping web service..."
 stop_service "BikeCon-web.service" "Web Interface Service"
 
-# Step 4: Stop joycon service
+# Step 2: Stop joycon service
 echo ""
 echo "Step 2: Stopping joycon service..."
 stop_service "BikeCon-joycon.service" "Joy-Con Input Service"
@@ -54,15 +54,10 @@ echo ""
 echo "Step 3: Stopping bike service..."
 stop_service "BikeCon-bike.service" "BLE Bike Connection Service"
 
-# Step 2: Stop mixer service
+# Step 4: Stop mixer service
 echo ""
 echo "Step 4: Stopping mixer service..."
 stop_service "BikeCon-mixer.service" "Gamepad Mixer Service"
-
-# Step 1: Stop hardware service last
-echo ""
-echo "Step 5: Stopping hardware service..."
-stop_service "BikeCon-hardware.service" "USB Hardware Configuration"
 
 echo ""
 echo "=========================================="
@@ -73,8 +68,6 @@ echo ""
 # Show final service status
 echo "Final Service Status:"
 echo "--------------------"
-systemctl status BikeCon-hardware.service --no-pager -l | grep -E "(Active|Loaded)" || echo "BikeCon-hardware.service: not loaded"
-echo ""
 systemctl status BikeCon-mixer.service --no-pager -l | grep -E "(Active|Loaded)" || echo "BikeCon-mixer.service: not loaded"
 echo ""
 systemctl status BikeCon-bike.service --no-pager -l | grep -E "(Active|Loaded)" || echo "BikeCon-bike.service: not loaded"

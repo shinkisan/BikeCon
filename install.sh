@@ -136,13 +136,13 @@ echo "[Step 4] Setting up Python virtual environment..."
 cd /opt/BikeCon
 
 # Check if venv already exists
-if [[ ! -d "BikeCon" ]]; then
+if [[ ! -d "venv" ]]; then
     echo "  Creating new virtual environment..."
-    python3 -m venv BikeCon
+    python3 -m venv venv
 fi
 
 # Activate venv and install dependencies
-source BikeCon/bin/activate
+source venv/bin/activate
 echo "  Installing dependencies from requirements.txt..."
 if [[ -f "$SCRIPT_DIR/requirements.txt" ]]; then
     pip install --upgrade pip
@@ -162,9 +162,6 @@ echo "[Step 5] Installing configuration template..."
 if [[ -f "$SCRIPT_DIR/config.example.json" ]]; then
     cp "$SCRIPT_DIR/config.json" /etc/BikeCon/config.json
     echo -e "${GREEN}✓ config.example.json copied to /etc/BikeCon/${NC}"
-    echo ""
-    echo -e "  ${YELLOW}IMPORTANT: You must edit /etc/BikeCon/config.json with your device configuration:${NC}"
-    echo "    sudo nano /etc/BikeCon/config.json  # Edit with your device MAC and Bluetooth data"
 else
     echo -e "${RED}WARNING: config.example.json not found${NC}"
 fi
@@ -173,9 +170,8 @@ echo ""
 # Step 5.1: Install identity.json
 echo "[Step 5.1] Installing identity configuration..."
 cp "$SCRIPT_DIR/identity.json" /etc/BikeCon/identity.json
-chmod 600 /etc/BikeCon/identity.json  # Restrict access to sensitive data
+chmod 755 /etc/BikeCon/identity.json
 echo -e "${GREEN}✓ identity.json copied to /etc/BikeCon/${NC}"
-echo -e "  ${YELLOW}NOTE: This file contains sensitive device credentials (UUIDs, MAC addresses)${NC}"
 echo ""
 
 # Step 6: Set file permissions
@@ -200,12 +196,15 @@ echo ""
 # Step 7: Install systemd service files
 echo "[Step 7] Installing systemd service files..."
 if [[ -d "$SCRIPT_DIR/systemd" ]]; then
-    cp "$SCRIPT_DIR/systemd/BikeCon-*.service" /etc/systemd/system/ 2>/dev/null || true
-    echo -e "${GREEN}✓ Service files copied${NC}"
+    if cp "$SCRIPT_DIR/systemd"/BikeCon-*.service /etc/systemd/system/; then
+        echo -e "${GREEN}✓ Service files copied${NC}"
+    else
+        echo -e "${RED}ERROR: Copy failed. Check if files exist or run with sudo.${NC}"
+        exit 1 
+    fi
 else
-    echo -e "${RED}WARNING: systemd directory not found${NC}"
+    echo -e "${RED}WARNING: systemd directory not found at $SCRIPT_DIR/systemd${NC}"
 fi
-echo ""
 
 # Step 8: Reload systemd daemon
 echo "[Step 8] Reloading systemd daemon..."
@@ -226,6 +225,7 @@ echo "Next steps:"
 echo "1. Verify identity.json configuration:"
 echo "   cat /etc/BikeCon/identity.json"
 echo "2. Start the services:"
+echo "   sudo ./start.sh or start individual services with systemctl:"
 echo "   sudo systemctl start BikeCon-hardware.service"
 echo "   sudo systemctl start BikeCon-mixer.service"
 echo "   sudo systemctl start BikeCon-bike.service"
