@@ -157,13 +157,13 @@ fi
 deactivate
 echo ""
 
-# Step 5: Copy config.example.json
+# Step 5: Copy config.json
 echo "[Step 5] Installing configuration template..."
-if [[ -f "$SCRIPT_DIR/config.example.json" ]]; then
+if [[ -f "$SCRIPT_DIR/config.json" ]]; then
     cp "$SCRIPT_DIR/config.json" /etc/BikeCon/config.json
-    echo -e "${GREEN}✓ config.example.json copied to /etc/BikeCon/${NC}"
+    echo -e "${GREEN}✓ config.json copied to /etc/BikeCon/${NC}"
 else
-    echo -e "${RED}WARNING: config.example.json not found${NC}"
+    echo -e "${RED}WARNING: config.json not found${NC}"
 fi
 echo ""
 
@@ -234,6 +234,7 @@ echo "   sudo systemctl start BikeCon-joycon.service"
 echo ""
 echo "4. View logs:"
 echo "   journalctl -u BikeCon-bike.service -f"
+echo "   Bike Raw Data Logs: tail -f /dev/shm/BikeCon/bike_raw_data.log"
 echo ""
 echo "System information:"
 echo "  Install directory: /opt/BikeCon"
