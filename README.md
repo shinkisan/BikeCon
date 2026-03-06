@@ -116,7 +116,7 @@ journalctl -u BikeCon-bike.service -f
 
 ## 问题反馈
 
-软件未经充分测试，如果遇到问题或请求其它型号支持，请带上/var/log/BikeCon/bike_raw_data.log提issue
+项目未经充分测试，如果遇到问题或请求其它型号支持，请带上/var/log/BikeCon/bike_raw_data.log提issue
 
 ## 架构
 
@@ -132,4 +132,4 @@ journalctl -u BikeCon-bike.service -f
 
 本项目仅用于技术研究与个人学习，不保证对所有硬件和固件版本的兼容性。因使用本项目导致的设备问题或 Keep 账号异常，作者概不负责。
 
-本项目大量使用AI，代码风格杂乱，中英双语日志和备注乱飞，有时间会慢慢打磨的😝。
+本项目大量使用AI，代码风格杂乱，中英双语日志和备注乱飞，有时间会慢慢打磨😝。
