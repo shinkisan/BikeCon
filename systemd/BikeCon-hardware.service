@@ -1,6 +1,6 @@
-# /etc/systemd/system/c2lite-hardware.service
+# /etc/systemd/system/BikeCon-hardware.service
 [Unit]
-Description=Initialize C2Lite USB Gadget Hardware
+Description=Initialize BikeCon USB Gadget Hardware
 DefaultDependencies=no
 After=local-fs.target configfs.target
 Requires=local-fs.target

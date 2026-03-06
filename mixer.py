@@ -4,11 +4,19 @@ import os
 import json
 import asyncio
 import sys
+from pathlib import Path
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
-SOCKET_PATH = "/tmp/c2lite_mixer.sock"
-HID_PATH = "/dev/hidg0"
+CONFIG_PATH = Path("/etc/BikeCon/config.json")
+SOCKET_PATH = Path("/var/run/BikeCon/mixer.sock")
+
+# Fallback if /var/run is not writable
+try:
+    os.makedirs("/var/run/BikeCon", exist_ok=True)
+except (PermissionError, OSError):
+    SOCKET_PATH = Path("/tmp/BikeCon/mixer.sock")
+    os.makedirs("/tmp/BikeCon", exist_ok=True)
+
+HID_PATH = Path("/dev/hidg0")
 
 class Mixer:
     def __init__(self):
@@ -29,9 +37,9 @@ class Mixer:
     
     def load_config(self):
         """从文件读取配置"""
-        if os.path.exists(CONFIG_FILE):
+        if CONFIG_PATH.exists():
             try:
-                with open(CONFIG_FILE, 'r') as f:
+                with CONFIG_PATH.open(encoding="utf-8") as f:
                     config = json.load(f)
                     self.bike_target = config.get("target", "disabled")
                     self.bike_max_rpm = config.get("max_rpm", 90)
@@ -42,7 +50,7 @@ class Mixer:
     def save_config(self):
         """保存当前配置到文件"""
         try:
-            with open(CONFIG_FILE, 'w') as f:
+            with CONFIG_PATH.open(encoding="utf-8", mode="w") as f:
                 json.dump({"target": self.bike_target, "max_rpm": self.bike_max_rpm}, f)
             print("[Mixer] 配置已持久化")
         except Exception as e:

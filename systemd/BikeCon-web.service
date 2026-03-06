@@ -1,0 +1,16 @@
+# /etc/systemd/system/BikeCon-web.service
+[Unit]
+Description=BikeCon Web Dashboard
+After=BikeCon-mixer.service network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/BikeCon
+ExecStart=/opt/BikeCon/venv/bin/python3 -m uvicorn webapp:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

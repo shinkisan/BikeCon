@@ -1,0 +1,19 @@
+# /etc/systemd/system/BikeCon-bike.service
+[Unit]
+Description=BikeCon Bike Bluetooth Driver
+Requires=BikeCon-mixer.service
+After=BikeCon-mixer.service bluetooth.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/BikeCon
+ExecStart=/opt/BikeCon/venv/bin/python3 bike_service.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

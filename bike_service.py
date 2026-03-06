@@ -7,18 +7,53 @@ import logging.handlers
 import shutil
 import atexit
 import glob
+import signal
+from pathlib import Path
 from bike_driver import BikeClient, BikeData, BikeStatus
 
-BIKE_MAC = "EC:64:C9:33:A9:36"
-SOCKET_PATH = "/tmp/c2lite_mixer.sock"
-WEBAPP_SOCKET = "/tmp/c2lite_webapp.sock"
-BIKE_ACTIVE_FLAG = "/tmp/c2lite_bike_active"
+IDENTITY_PATH = Path("/etc/BikeCon/identity.json")
+
+# Load bike MAC from identity.json (REQUIRED).
+BIKE_MAC = None
+try:
+    if IDENTITY_PATH.exists():
+        with IDENTITY_PATH.open(encoding="utf-8") as f:
+            cfg = json.load(f)
+            mac = cfg.get("bike_mac")
+            if isinstance(mac, str) and mac:
+                BIKE_MAC = mac
+except Exception as e:
+    print(f"[BikeService] Failed to load bike_mac from identity.json: {e}")
+
+if not BIKE_MAC:
+    raise ValueError(
+        "[BikeService] CRITICAL: 'bike_mac' not found or empty in identity.json. "
+        "This field is required and contains your device's Bluetooth MAC address. "
+        "Please configure it locally in identity.json (add to .gitignore to keep it private)."
+    )
+SOCKET_PATH = "/var/run/BikeCon/mixer.sock"
+WEBAPP_SOCKET = "/var/run/BikeCon/webapp.sock"
+BIKE_ACTIVE_FLAG = "/var/run/BikeCon/bike_active"
+
+# 确保运行时目录存在
+try:
+    os.makedirs("/var/run/BikeCon", exist_ok=True)
+except PermissionError:
+    # 降级方案：使用 /tmp 作为备用
+    SOCKET_PATH = "/tmp/BikeCon/mixer.sock"
+    WEBAPP_SOCKET = "/tmp/BikeCon/webapp.sock"
+    BIKE_ACTIVE_FLAG = "/tmp/BikeCon/bike_active"
+    os.makedirs("/tmp/BikeCon", exist_ok=True)
 
 # --- 日志配置 ---
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-RAM_LOG_PATH = "/tmp/bike_raw_data.log"
-PERSISTENT_LOG_DIR = os.path.join(CURRENT_DIR, "logs")
+RAM_DISK_DIR = "/dev/shm/BikeCon" 
+os.makedirs(RAM_DISK_DIR, exist_ok=True)
+# 内存中的临时日志路径
+RAM_LOG_PATH = os.path.join(RAM_DISK_DIR, "bike_raw_data.log")
+# 磁盘上的持久化目录
+PERSISTENT_LOG_DIR = "/var/log/BikeCon"
 os.makedirs(PERSISTENT_LOG_DIR, exist_ok=True)
+
 MAX_LOG_SIZE = 2 * 1024 * 1024 
 BACKUP_COUNT = 1
 
@@ -33,14 +68,20 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 
 def save_logs_to_disk():
-    print("[Log] 正在将内存日志回写到 SD 卡...")
+    print("[Log] 正在将内存日志写入磁盘...")
     try:
+        # 获取内存中所有的日志文件（包括旋转产生的 .1, .2 等）
         for temp_file in glob.glob(f"{RAM_LOG_PATH}*"):
             if os.path.exists(temp_file):
                 filename = os.path.basename(temp_file)
                 dest_path = os.path.join(PERSISTENT_LOG_DIR, filename)
+                
+                # 核心检查：如果源路径和目标路径相同，则跳过
+                if os.path.abspath(temp_file) == os.path.abspath(dest_path):
+                    continue
+                    
                 shutil.copy2(temp_file, dest_path)
-                print(f"[Log] 已保存: {dest_path}")
+                print(f"[Log] 已同步到磁盘: {dest_path}")
     except Exception as e:
         print(f"[Log] 保存失败: {e}")
 
@@ -141,34 +182,39 @@ class BikeBridge:
 
     async def run(self):
         print(f"[Bridge] 启动蓝牙服务 ({BIKE_MAC})...")
-        
-        while True:
+        loop = asyncio.get_running_loop()
+        stop_event = asyncio.Event()
+
+        def _signal_handler():
+            print("[Bridge] 收到终止信号，开始清理...")
+            stop_event.set()
+
+        # 注册 Unix 信号处理（也适用于 Ctrl+C）
+        for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                # 1. 尝试启动驱动
-                # 现在的 connect() 成功后会启动内部看门狗，看门狗会负责后续所有的掉线重连
-                success = await self.client.connect()
-                
-                if success:
-                    print(f"\n[Bridge] 驱动启动成功...")
-                    
-                    # 2. [关键修改] 移除外层的 is_connected 循环检查
-                    # 改为检测 client.running 标志。
-                    # 只要驱动还在运行意图中（没有被代码显式 stop），这里就一直挂起，
-                    # 即使中间蓝牙断了，驱动内部的看门狗也在疯狂重试，我们不要插手。
-                    while self.client.running:
-                        await asyncio.sleep(1)
-                        
-                    print(f"\n[Bridge] 驱动停止运行 (Running=False)")
-                else:
-                    print(f"[Bridge] 启动失败，无法找到设备或连接被拒绝")
+                loop.add_signal_handler(sig, _signal_handler)
+            except NotImplementedError:
+                # Windows 的事件循环不支持 add_signal_handler
+                pass
 
-            except Exception as e:
-                print(f"[Bridge] 运行时严重错误: {e}")
+        try:
+            # 【修改点 1】只需要调用一次 start()。
+            # 驱动内部的看门狗会自动接管：尝试连接、断线重连等所有脏活累活。
+            await self.client.start()
+            print(f"\n[Bridge] 驱动已启动...")
+
+            # 【修改点 2】抛弃原先的 while True 和 sleep 循环。
+            # 直接挂起主协程，直到收到终止信号 (Ctrl+C 或 systemctl stop)
+            await stop_event.wait()
+
+        except Exception as e:
+            print(f"[Bridge] 运行时严重错误: {e}")
             
-            # 如果 connect 返回 False 或 意外退出，等待 5 秒重试
-            print("[Bridge] 5秒后尝试重启服务...")
-            await asyncio.sleep(5)
-
+        finally:
+            # 【修改点 3】在退出前调用统一的 stop() 接口，安全清理所有任务和蓝牙连接
+            print("[Bridge] 正在停止蓝牙驱动...")
+            await self.client.stop()
+            print("[Bridge] 已安全退出")
 
 if __name__ == "__main__":
     bridge = BikeBridge()

@@ -1,1 +1,4 @@
-{"target": "rt", "max_rpm": 100}
+{
+	"target": "rt",
+	"max_rpm": 100
+}
