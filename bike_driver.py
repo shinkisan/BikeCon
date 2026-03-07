@@ -11,17 +11,29 @@ from bleak.exc import BleakError
 
 IDENTITY_PATH = Path("/etc/BikeCon/identity.json")
 
+def to_int(val):
+    if isinstance(val, (bytes, bytearray)):
+        # 如果是字节数组，按小端序转成整数（最多支持4字节，防止溢出）
+        return int.from_bytes(val, 'little') if len(val) <= 4 else 0
+    # 如果已经是数字，直接转成 int
+    return int(val) if isinstance(val, (int, float)) else 0
+
 class BikeStatus(Enum):
-    IDLE = 0
-    ACTIVE = 1
+    UNKNOWN = 0
+    READY = 1     # 待机/随时可骑 (实测 STA 01)
+    TRANSITION = 2      # 倒计时或退出阶段 (实测 STA 02)
+    ACTIVE = 3    # 正在骑行 (实测 STA 03)
+    PAUSED = 4    # 手动暂停 (实测 STA 04)
 
 @dataclass
 class BikeData:
     rpm: int = 0
     power: int = 0
     duration: int = 0 
+    distance: int = 0   # 新增：累计距离
+    speed: float = 0.0  # 新增：实时速度
     resistance: int = 0 
-    calories: int = 0  
+    calories: float = 0.0  
     status_code: int = 0 
     raw_data: Optional[str] = None
 
@@ -29,13 +41,14 @@ class BikeClient:
     CHAR_UUID = "0000ff01-0000-1000-8000-00805f9b34fb"
     MAGIC_KEY = bytes.fromhex("CB06")
     
-    # Tag 定义
-    TAG_RPM = 0x30
-    TAG_POWER = 0x38
-    TAG_STATUS = 0x10 
-    TAG_DURATION = 0x18
-    TAG_CALORIES = 0x20 
-    TAG_RESISTANCE = 0x28
+    # 采用标准的字段 ID (Field Number) 而非硬编码 Tag
+    FIELD_DISTANCE = 2
+    FIELD_DURATION = 3
+    FIELD_CALORIES = 4
+    FIELD_RESISTANCE = 5
+    FIELD_RPM = 6
+    FIELD_POWER = 7
+    FIELD_STATUS = 8
     
     # Constants from reverse report
     SRC_ID_PHONE = bytes.fromhex("3216ef23")
@@ -68,9 +81,11 @@ class BikeClient:
         self.running = False  
         self._seq = 0
         self._app_counter = 0xA4 
-        self._current_status = BikeStatus.IDLE
+        self._current_status = BikeStatus.READY
         self._last_data_time = time.time()
         self._last_calories = 0
+        self._prev_dist = None
+        self._prev_dur = None
         
         # 任务控制
         self._watchdog_task: Optional[asyncio.Task] = None
@@ -105,6 +120,31 @@ class BikeClient:
         self._log("Identity loaded successfully.")
 
     # ================= 协议打包与解析层 =================
+    def _decode_protobuf(self, pb_data: bytes) -> dict[int, Any]:
+        """通用的 Protobuf 动态扫描引擎"""
+        results = {}
+        ptr = 0
+        while ptr < len(pb_data):
+            try:
+                tag = pb_data[ptr]
+                field_num = tag >> 3     # 提取字段 ID
+                wire_type = tag & 0x07   # 提取数据类型
+                ptr += 1
+                
+                if wire_type == 0:       # Varint (整数)
+                    val, consumed = self._read_varint(pb_data, ptr)
+                    results[field_num] = val
+                    ptr += consumed
+                elif wire_type == 2:     # Length-delimited (字符串或字节数组)
+                    length, consumed = self._read_varint(pb_data, ptr)
+                    ptr += consumed
+                    results[field_num] = pb_data[ptr : ptr + length]
+                    ptr += length
+                else:
+                    ptr += 1             # 跳过未知类型
+            except Exception:
+                break
+        return results
 
     async def _send_handshake(self):
         self._log("构建并发送动态握手包...")
@@ -210,55 +250,65 @@ class BikeClient:
     # ================= 业务与数据处理层 =================
 
     def _notification_handler(self, sender: Any, data: bytearray):
-        # 喂狗
         self._last_data_time = time.time()
 
-        # Session 结束包处理
-        if self.CMD_2F34 in data:
-            self._log("Session end packet received. Queuing ACK.")
-            # 【修复】将任务推入队列，避免在回调中直接 create_task 失控
-            self._tx_queue.put_nowait(("ACK", None))
+        # 1. 定位数据正文
+        marker = self.CMD_2F37 + b'\xff'
+        marker_idx = data.find(marker)
+        
+        if marker_idx == -1:
             return
 
-        # 状态判定
-        magic_idx = data.find(self.MAGIC_KEY)
-        new_status = BikeStatus.ACTIVE if magic_idx != -1 else BikeStatus.IDLE
+        # 2. 获取有效正文并解析
+        start_ptr = marker_idx + len(marker)
+        pb_data = data[start_ptr : -2]
+        fields = self._decode_protobuf(pb_data)
 
+        # 3. 提取基础数据
+        res = {
+            'rpm': to_int(fields.get(self.FIELD_RPM, 0)),
+            'power': to_int(fields.get(self.FIELD_POWER, 0)),
+            'duration': to_int(fields.get(self.FIELD_DURATION, 0)),
+            'distance': to_int(fields.get(self.FIELD_DISTANCE, 0)),
+            'resistance': to_int(fields.get(self.FIELD_RESISTANCE, 1)),
+            'calories': to_int(fields.get(self.FIELD_CALORIES, 0)) / 1.0,
+            'status_code': to_int(fields.get(self.FIELD_STATUS, 2))
+        }
+
+        # 4. 智能速度计算
+        current_speed = 0.0
+        if self._prev_dist is not None and self._prev_dur is not None:
+            delta_d = res['distance'] - self._prev_dist
+            delta_t = res['duration'] - self._prev_dur
+            if delta_t > 0 and delta_d >= 0:
+                current_speed = (delta_d / delta_t) * 3.6
+        
+        self._prev_dist = res['distance']
+        self._prev_dur = res['duration']
+
+       # 5. 状态感知与数据清洗 (优化后)
+        status_code = res['status_code']
+        try:
+            new_status = BikeStatus(status_code)
+        except ValueError:
+            new_status = BikeStatus.UNKNOWN
+
+        # 核心逻辑：只有在真正的 ACTIVE 状态下才保留转速和功率
+        # 在 READY (01), TRANSITION (02), PAUSED (04) 时，全部强制归零
+        if new_status != BikeStatus.ACTIVE:
+            res['rpm'] = 0
+            res['power'] = 0
+            current_speed = 0.0
+
+        # 6. 更新状态回调
         if new_status != self._current_status:
-            old_status = self._current_status
-            self._current_status = new_status
             if self.status_callback:
-                self.status_callback(old_status, new_status)
+                self.status_callback(self._current_status, new_status)
+            self._current_status = new_status
 
-        # 数据解析
-        bike_data = None
-        if new_status == BikeStatus.ACTIVE:
-            try:
-                start_ptr = magic_idx + 2
-                if len(data) >= start_ptr + 2:
-                    payload = data[start_ptr:-2]
-                    res = {'rpm': 0, 'power': 0, 'duration': 0, 'resistance': 0, 'calories': 0, 'status_code': 0}
-                    i = 0
-                    while i < len(payload):
-                        if i + 1 >= len(payload): break
-                        tag = payload[i]
-                        val, bytes_used = self._read_varint(payload, i + 1)
-                        if tag == self.TAG_STATUS:     res['status_code'] = val
-                        elif tag == self.TAG_DURATION: res['duration'] = val
-                        elif tag == self.TAG_CALORIES: res['calories'] = val
-                        elif tag == self.TAG_RESISTANCE: res['resistance'] = val
-                        elif tag == self.TAG_RPM:      res['rpm'] = val
-                        elif tag == self.TAG_POWER:    res['power'] = val
-                        i += (1 + bytes_used)
-
-                    bike_data = BikeData(**res, raw_data=data.hex())
-                    self._last_calories = res['calories']
-            except Exception as e:
-                self._log(f"Parser Error: {e}", "ERROR")
-
-        if bike_data is None:
-            bike_data = BikeData(raw_data=data.hex())
-
+        # 7. 组装并推送数据
+        bike_data = BikeData(**res, speed=round(current_speed, 1), raw_data=data.hex())
+        self._last_calories = int(res['calories'])
         self.data_callback(bike_data)
 
     # ================= 核心并发任务控制层 =================
@@ -282,7 +332,8 @@ class BikeClient:
         self._log("Heartbeat Loop started.")
         while self.running and self.client and self.client.is_connected:
             try:
-                if self._current_status == BikeStatus.IDLE:
+                # 只有不是 ACTIVE 状态（READY/TRANSITION/PAUSED），才发送不带卡路里的心跳
+                if self._current_status != BikeStatus.ACTIVE: 
                     await self._send_command(self.CMD_2F37, session=self.SESSION_ACTIVE)
                 else:
                     varint_cal = self._write_varint(self._last_calories * 1000)
@@ -307,10 +358,11 @@ class BikeClient:
                 self._log(f"Connection lost detected. Reason: {reason}", "WARN")
                 
                 # 通知 UI 掉线重连
-                if self._current_status != BikeStatus.IDLE:
+                if self._current_status != BikeStatus.READY:
                     old_status = self._current_status
-                    self._current_status = BikeStatus.IDLE
-                    if self.status_callback: self.status_callback(old_status, BikeStatus.IDLE)
+                    self._current_status = BikeStatus.READY
+                    if self.status_callback: 
+                        self.status_callback(old_status, BikeStatus.READY)
                 self.data_callback(BikeData(raw_data="RECONNECTING"))
                 
                 # 清理旧连接
