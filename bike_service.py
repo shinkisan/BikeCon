@@ -130,41 +130,46 @@ class BikeBridge:
         asyncio.create_task(self.webapp.send(payload))
 
     def on_data(self, data: BikeData):
-        """蓝牙回调：把全量数据转发给 Mixer 和 WebApp"""
+        """蓝牙回调：转发优化后的全量数据"""
         
-        # 1. 组装更丰富的消息体 (供前端/Mixer使用)
+        # 1. 组装全量数据消息体 (新增 speed 和 distance)
         msg = {
             "type": "bike_data", 
             "rpm": data.rpm,
             "power": data.power,
-            "duration": data.duration,     # 新增: 运动时长(秒)
-            "resistance": data.resistance, # 新增: 阻力档位
-            "calories": data.calories,     # 新增: 消耗(kcal)
-            "seq": data.status_code        # 新增: 包序号/状态位
+            "speed": data.speed,       # 新增: 实时速度 (km/h)
+            "distance": data.distance, # 新增: 累计距离 (m)
+            "duration": data.duration,
+            "resistance": data.resistance,
+            "calories": data.calories,
+            "status": data.status_code # 建议将字段名改为 status，因为它代表机器状态
         }
         
-        # 2. 格式化日志输出
-        # 使用更紧凑的格式，Status Code 显示为 16 进制以便调试
-        # raw_data 做判空处理
+        # 2. 优化日志格式
+        # 增加 SPD(速度) 和 DST(距离)，并将 SEQ 改为更准确的 STA(状态)
         raw_hex = data.raw_data if data.raw_data else "N/A"
         
         log_msg = (
-            f"HEX: {raw_hex:<48} | "  # 预留空间对齐HEX
+            f"HEX: {raw_hex:<48} | "
             f"RPM: {data.rpm:<3} | "
             f"PWR: {data.power:<3} | "
+            f"SPD: {data.speed:<4.1f} | "  # 新增速度显示
+            f"DST: {data.distance:<5} | "  # 新增距离显示
             f"RES: {data.resistance:<2} | "
             f"TIME: {data.duration:<4} | "
-            f"KCAL: {data.calories:<3} | "
-            f"SEQ: {data.status_code:02X}" # 显示为 16 进制 (如 C3, B9)
+            f"KCAL: {data.calories:<3.1f} | "
+            f"STA: {data.status_code:02X}"   # 原 SEQ 现改为 STA (Status)
         )
         
         logger.info(log_msg)
         self.send_data(msg)
     
     def on_status(self, old_status, new_status):
+        # 严格判断：只有 3 (ACTIVE) 才算真正激活
         is_active = (new_status == BikeStatus.ACTIVE)
         print(f"\n[Bridge] 状态变更: {old_status.name} -> {new_status.name}")
 
+        # 控制系统层面的活跃标志文件
         try:
             if is_active:
                 with open(BIKE_ACTIVE_FLAG, 'w') as f: f.write("1")
@@ -174,10 +179,12 @@ class BikeBridge:
         except Exception as e:
             print(f"Flag Error: {e}")
         
-        # 发送状态消息
+        # 给前端发送更细致的消息，前端可以据此切换 UI 状态（如显示“已暂停”、“321倒计时”等）
         self.send_data({
             "type": "bike_status", 
-            "active": is_active
+            "active": is_active,
+            "status_name": new_status.name, # 发送 "READY", "IDLE", "ACTIVE", "PAUSED"
+            "status_code": new_status.value # 发送 1, 2, 3, 4
         })
 
     async def run(self):
