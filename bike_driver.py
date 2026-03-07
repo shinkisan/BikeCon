@@ -39,7 +39,6 @@ class BikeData:
 
 class BikeClient:
     CHAR_UUID = "0000ff01-0000-1000-8000-00805f9b34fb"
-    MAGIC_KEY = bytes.fromhex("CB06")
     
     # 采用标准的字段 ID (Field Number) 而非硬编码 Tag
     FIELD_DISTANCE = 2
