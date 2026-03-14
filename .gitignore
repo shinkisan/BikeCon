@@ -5,4 +5,7 @@ __pycache__/
 identity.json
 identity.json.bak
 doc/
+logs/
 .github/prompts/
+debug/
+reference/

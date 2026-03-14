@@ -5,7 +5,7 @@ import argparse
 import os
 import sys
 
-def extract_to_auth_json(file_path):
+def extract_to_auth_json(file_path, output_filename="identity.json"):
     print(f"[*] 正在分析二进制日志: {file_path}")
     
     # --- 校验文件是否存在 ---
@@ -19,9 +19,7 @@ def extract_to_auth_json(file_path):
     auth_data = {
         "bike_name": "Unknown",
         "bike_mac": "Unknown",
-        "client_id": "Unknown", 
-        "uuid1": "Unknown", 
-        "uuid2": "Unknown"  
+        "handshake_packets": []  # 新增握手包存储
     }
 
     # --- 在外层添加 try-except 拦截解析引擎崩溃 ---
@@ -49,35 +47,15 @@ def extract_to_auth_json(file_path):
 
                 value_hex = getattr(pkt.btatt, 'value', '').replace(':', '').lower()
                 
-                # 1. 提取 UUID (来自 2f33 包)
-                if "a5a5a0" in value_hex and "2f33" in value_hex:
-                    try:
-                        ascii_str = bytes.fromhex(value_hex).decode('ascii', errors='ignore')
+                # 提取握手包 (前缀 a5a5a000 ~ a5a5a003)
+                if value_hex.startswith(('a5a5a000', 'a5a5a001', 'a5a5a002', 'a5a5a003')):
+                    # 只保留前4个不同前缀的包
+                    current_prefix = value_hex[:8]
+                    if not any(packet.startswith(current_prefix) for packet in auth_data["handshake_packets"]):
+                        auth_data["handshake_packets"].append(value_hex)
+                        # 按前缀排序
+                        auth_data["handshake_packets"].sort(key=lambda x: x[:8])
                         
-                        u1 = re.search(r'[a-f0-9]{24}', ascii_str)
-                        if u1 and auth_data["uuid1"] == "Unknown": 
-                            auth_data["uuid1"] = u1.group(0)
-                        
-                        temp_str = re.sub(r'[a-f0-9]{24}', '', ascii_str)
-                        u2 = re.search(r'[a-f0-9]{16}', temp_str)
-                        if u2 and auth_data["uuid2"] == "Unknown": 
-                            auth_data["uuid2"] = u2.group(0)
-                    except:
-                        pass
-                
-                # 2. 提取 Client ID (来自 2f31 包)
-                # 修复核心：必须是手机发出的包，且只有当 client_id 为 Unknown 时才写入
-                if is_from_phone and auth_data["client_id"] == "Unknown":
-                    if "a5a5a0" in value_hex and "2f31" in value_hex:
-                        try:
-                            # 匹配规律: b3 30/31 2f 31 ff + 32个Hex(即16字节文本) + 00
-                            match_client = re.search(r'b33[01]2f31ff([0-9a-f]{32})00', value_hex)
-                            if match_client:
-                                client_str = bytes.fromhex(match_client.group(1)).decode('ascii', errors='ignore')
-                                auth_data["client_id"] = client_str
-                        except:
-                            pass
-
             except Exception:
                 continue
                 
@@ -93,7 +71,6 @@ def extract_to_auth_json(file_path):
         sys.exit(1)
 
     # 写入 JSON 文件
-    output_filename = "identity.json"
     with open(output_filename, 'w', encoding='utf-8') as f:
         json.dump(auth_data, f, indent=4, ensure_ascii=False)
     
@@ -102,6 +79,7 @@ def extract_to_auth_json(file_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Keep 单车鉴权信息提取工具")
     parser.add_argument("log", help="原始 .btsnoop 或 .pcap 日志路径")
+    parser.add_argument("-o", "--output", default="identity.json", help="输出 JSON 文件名")
     args = parser.parse_args()
     
-    extract_to_auth_json(args.log)
+    extract_to_auth_json(args.log, args.output)
