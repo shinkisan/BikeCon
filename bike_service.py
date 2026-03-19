@@ -245,7 +245,8 @@ class BikeService:
             "type": "bike_status",
             "active": is_active,
             "status_name": new_status.name,
-            "status_code": new_status.value
+            "status_code": new_status.value,
+            "reconnect_interval_sec": getattr(self.client, "reconnect_interval_sec", 5)
         }
         
         self.broadcast_to_subscribers(status_msg)
