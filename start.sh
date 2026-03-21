@@ -85,6 +85,11 @@ echo ""
 echo "Step 5: Starting web service..."
 start_service "BikeCon-web.service" "Web Interface Service"
 
+# Step 6: Start FTMS service (optional, for FTMS support)
+echo ""
+echo "Step 6: Starting FTMS service..."
+start_service "BikeCon-ftms.service" "FTMS Service"
+
 echo ""
 echo "=========================================="
 echo -e "${GREEN}Service startup complete!${NC}"
@@ -103,6 +108,8 @@ echo ""
 systemctl status BikeCon-joycon.service --no-pager -l | grep -E "(Active|Loaded|Status)"
 echo ""
 systemctl status BikeCon-web.service --no-pager -l | grep -E "(Active|Loaded|Status)"
+echo ""
+systemctl status BikeCon-ftms.service --no-pager -l | grep -E "(Active|Loaded|Status)"
 
 echo ""
 echo "=========================================="

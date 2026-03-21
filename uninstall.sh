@@ -54,12 +54,14 @@ systemctl stop BikeCon-bike.service 2>/dev/null || true
 systemctl stop BikeCon-joycon.service 2>/dev/null || true
 systemctl stop BikeCon-web.service 2>/dev/null || true
 systemctl stop BikeCon-mixer.service 2>/dev/null || true
+systemctl stop BikeCon-ftms.service 2>/dev/null || true
 echo "  Services stopped."
 
 systemctl disable BikeCon-bike.service 2>/dev/null || true
 systemctl disable BikeCon-joycon.service 2>/dev/null || true
 systemctl disable BikeCon-web.service 2>/dev/null || true
 systemctl disable BikeCon-mixer.service 2>/dev/null || true
+systemctl disable BikeCon-ftms.service 2>/dev/null || true
 echo "  Services disabled."
 echo ""
 

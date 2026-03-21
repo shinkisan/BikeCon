@@ -9,15 +9,18 @@ import os
 import subprocess
 import errno
 from evdev import ecodes, InputDevice, list_devices
+from pathlib import Path
 
 # Socket path follows FHS standard
 SOCKET_PATH = "/var/run/BikeCon/mixer.sock"
+WEBAPP_SOCKET = "/var/run/BikeCon/webapp.sock"
 
 # Fallback if /var/run is not writable
 try:
     os.makedirs("/var/run/BikeCon", exist_ok=True)
 except (PermissionError, OSError):
     SOCKET_PATH = "/tmp/BikeCon/mixer.sock"
+    WEBAPP_SOCKET = "/tmp/BikeCon/webapp.sock"
     os.makedirs("/tmp/BikeCon", exist_ok=True)
 IDLE_TIMEOUT = 600 # 普通手柄 10分钟无操作断开
 IMU_IDLE_TIMEOUT = 2 # IMU 2秒无数据视为手动关闭，强制断开
@@ -49,6 +52,77 @@ class MixerClient:
                 except Exception:
                     self.writer = None
 
+class AsyncUnixClient:
+    def __init__(self, path, name):
+        self.path = path
+        self.name = name
+        self.writer = None
+
+    async def ensure_connection(self):
+        if self.writer and not self.writer.transport.is_closing():
+            return True
+        try:
+            _, self.writer = await asyncio.open_unix_connection(self.path)
+            return True
+        except Exception:
+            self.writer = None
+            return False
+
+    async def send(self, data):
+        if await self.ensure_connection():
+            try:
+                self.writer.write(json.dumps(data).encode() + b'\n')
+                await self.writer.drain()
+            except Exception:
+                self.writer = None
+
+def _read_text(path: Path):
+    try:
+        return path.read_text().strip()
+    except Exception:
+        return None
+
+def _normalize_mac(text: str):
+    if not text:
+        return None
+    return re.sub(r'[^0-9a-fA-F]', '', text).upper()
+
+def _battery_from_sysfs(mac: str, name: str, is_left: bool):
+    base = Path("/sys/class/power_supply")
+    if not base.exists():
+        return None
+    best = None
+    best_score = 0
+    for supply in base.iterdir():
+        cap_level = _read_text(supply / "capacity_level")
+        if not cap_level:
+            continue
+        supply_name = supply.name
+        score = 0
+        if "nintendo_switch_controller_battery" in supply_name:
+            score += 2
+        if is_left and "2006" in supply_name:
+            score += 3
+        if (not is_left) and "2007" in supply_name:
+            score += 3
+        if score > best_score:
+            best_score = score
+            level_map = {
+                "Full": 100,
+                "High": 75,
+                "Normal": 50,
+                "Low": 25,
+                "Critical": 5
+            }
+            best = level_map.get(cap_level, None)
+    return best
+
+def get_battery_level(mac: str, name: str, is_left: bool):
+    level = _battery_from_sysfs(mac, name, is_left)
+    if level is not None:
+        return max(0, min(100, level))
+    return None
+
 def get_device_mac(device):
     if device.uniq and len(device.uniq) == 17:
         return device.uniq.upper()
@@ -65,8 +139,9 @@ def map_value(value, min_v, max_v):
     return int(val)
 
 class JoyConHandler:
-    def __init__(self, device, mixer_client, is_imu=False):
+    def __init__(self, device, mixer_client, webapp_client, is_imu=False):
         self.mixer = mixer_client
+        self.webapp = webapp_client
         self.is_imu = is_imu
         self.name = device.name.lower()
         self.is_left = "left" in self.name or "(l)" in self.name
@@ -75,8 +150,11 @@ class JoyConHandler:
         self.last_activity = time.time()
         self.mac = get_device_mac(device)
         self.device = device
+        self.last_battery = None
+        self.last_battery_sent = 0
         # 记录关联的 loop 任务，以便 monitor 可以取消它
         self.read_task = None 
+        self.battery_task = None
         
         try:
             self.abs_x = device.absinfo(ecodes.ABS_X)
@@ -101,6 +179,7 @@ class JoyConHandler:
         print(f"[{self.side}] {'IMU' if is_imu else 'Controller'} Ready: {self.mac}")
         if not is_imu:
             asyncio.create_task(self.mixer.send({"type": "source", "val": "physical"}))
+            self.battery_task = asyncio.create_task(self.battery_monitor())
     
     async def loop(self):
         try:
@@ -119,6 +198,29 @@ class JoyConHandler:
             self.is_connected = False
             if not self.is_imu:
                 asyncio.create_task(self.mixer.send({"type": "source", "val": "virtual"}))
+                await self.send_battery_update(None, connected=False)
+
+    async def send_battery_update(self, percent, connected=True):
+        msg = {
+            "type": "joycon_battery",
+            "side": self.side,
+            "percent": percent,
+            "connected": connected,
+            "mac": self.mac
+        }
+        await self.webapp.send(msg)
+
+    async def battery_monitor(self):
+        while self.is_connected:
+            level = get_battery_level(self.mac, self.name, self.is_left)
+            now = time.time()
+            changed = level != self.last_battery
+            stale = (now - self.last_battery_sent) > 300
+            if changed or stale:
+                self.last_battery = level
+                self.last_battery_sent = now
+                await self.send_battery_update(level, connected=True)
+            await asyncio.sleep(30)
 
     async def process_event(self, event):
         if self.is_imu:
@@ -219,6 +321,7 @@ class JoyConHandler:
 
 async def main():
     mixer_client = MixerClient(SOCKET_PATH)
+    webapp_client = AsyncUnixClient(WEBAPP_SOCKET, "WebApp")
     print("正在扫描 Joy-Con...")
     connected_paths = set()
 
@@ -230,7 +333,7 @@ async def main():
                 
                 if "joy-con" in dev.name.lower():
                     is_imu = "imu" in dev.name.lower()
-                    handler = JoyConHandler(dev, mixer_client, is_imu)
+                    handler = JoyConHandler(dev, mixer_client, webapp_client, is_imu)
                     connected_paths.add(dev.path)
                     
                     loop_task = asyncio.create_task(handler.loop())

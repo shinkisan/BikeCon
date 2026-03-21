@@ -1,6 +1,6 @@
 # /etc/systemd/system/BikeCon-bike.service
 [Unit]
-Description=BikeCon Bike Bluetooth Driver
+Description=BikeCon Bike Service (Driver + Pub/Sub)
 Requires=BikeCon-mixer.service
 After=BikeCon-mixer.service bluetooth.target
 

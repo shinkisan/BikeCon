@@ -128,6 +128,10 @@ for pyfile in "$SCRIPT_DIR"/*.py; do
     fi
 done
 cp "$SCRIPT_DIR/index.html" /opt/BikeCon/ 2>/dev/null || true
+if [[ -d "$SCRIPT_DIR/static" ]]; then
+    rm -rf /opt/BikeCon/static
+    cp -r "$SCRIPT_DIR/static" /opt/BikeCon/
+fi
 echo -e "${GREEN}✓ Application code copied${NC}"
 echo ""
 
@@ -214,6 +218,7 @@ systemctl enable BikeCon-mixer.service 2>/dev/null || true
 systemctl enable BikeCon-bike.service 2>/dev/null || true
 systemctl enable BikeCon-joycon.service 2>/dev/null || true
 systemctl enable BikeCon-web.service 2>/dev/null || true
+systemctl enable BikeCon-ftms.service 2>/dev/null || true
 echo -e "${GREEN}✓ Systemd services registered and enabled${NC}"
 echo ""
 
@@ -231,6 +236,7 @@ echo "   sudo systemctl start BikeCon-mixer.service"
 echo "   sudo systemctl start BikeCon-bike.service"
 echo "   sudo systemctl start BikeCon-web.service"
 echo "   sudo systemctl start BikeCon-joycon.service"
+echo "   sudo systemctl start BikeCon-ftms.service"
 echo ""
 echo "4. View logs:"
 echo "   journalctl -u BikeCon-bike.service -f"

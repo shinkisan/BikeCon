@@ -13,9 +13,7 @@ IDENTITY_PATH = Path("/etc/BikeCon/identity.json")
 
 def to_int(val):
     if isinstance(val, (bytes, bytearray)):
-        # 如果是字节数组，按小端序转成整数（最多支持4字节，防止溢出）
         return int.from_bytes(val, 'little') if len(val) <= 4 else 0
-    # 如果已经是数字，直接转成 int
     return int(val) if isinstance(val, (int, float)) else 0
 
 class BikeStatus(Enum):
@@ -30,8 +28,8 @@ class BikeData:
     rpm: int = 0
     power: int = 0
     duration: int = 0 
-    distance: int = 0   # 新增：累计距离
-    speed: float = 0.0  # 新增：实时速度
+    distance: int = 0   
+    speed: float = 0.0  
     resistance: int = 0 
     calories: float = 0.0  
     status_code: int = 0 
@@ -40,7 +38,7 @@ class BikeData:
 class BikeClient:
     CHAR_UUID = "0000ff01-0000-1000-8000-00805f9b34fb"
     
-    # 采用标准的字段 ID (Field Number) 而非硬编码 Tag
+    # 字段 ID (Field Number) 
     FIELD_DISTANCE = 2
     FIELD_DURATION = 3
     FIELD_CALORIES = 4
@@ -49,24 +47,20 @@ class BikeClient:
     FIELD_POWER = 7
     FIELD_STATUS = 8
     
-    # Constants from reverse report
+    # Protocol 常量
     SRC_ID_PHONE = bytes.fromhex("3216ef23")
     DST_SUB_PHONE = bytes.fromhex("5501")
     MSG_TYPE = bytes.fromhex("93")
     SESSION_IDLE = bytes.fromhex("0000")
     SESSION_ACTIVE = bytes.fromhex("0400")
     FIXED_BYTE = bytes.fromhex("01")
-    DST_SUB_SYNC = bytes.fromhex("5503")
-    SESSION_SYNC = bytes.fromhex("0300")
-    CMD_2F31 = b'\xb3\x31\x2f\x31'
-    CMD_2F33 = b'\xb3\x30\x2f\x33'
-    CMD_2F31_SHORT = b'\xb3\x30\x2f\x31'          # 对应 "0/1"  
-    CMD_2F33_LONG  = b'\xb5\x31\x30\x36\x2f\x33'  # 对应 "106/3"
     CMD_2F37 = b'\xb5\x31\x30\x36\x2f\x37'
     CMD_2F34 = b'\xb5\x31\x30\x36\x2f\x34'
     FRAME_MAGIC = b'\xA5\xA5\xA0'
+
     HEARTBEAT_INTERVAL = 1.0
     DATA_TIMEOUT_LIMIT = 20.0
+    RECONNECT_INTERVAL_SEC = 5.0
 
     def __init__(self, 
                  mac_address: str, 
@@ -92,10 +86,8 @@ class BikeClient:
         self._tx_worker_task: Optional[asyncio.Task] = None
         self._tx_queue = asyncio.Queue()
         
-        # Identity data
-        self.client_id = ""
-        self.uuid1 = ""
-        self.uuid2 = ""
+        # 身份验证
+        self.handshake_packets = []
         self._load_identity()
 
     def _log(self, msg: str, level: str = None):
@@ -106,17 +98,15 @@ class BikeClient:
         try:
             if IDENTITY_PATH.exists():
                 identity = json.loads(IDENTITY_PATH.read_text(encoding="utf-8"))
-                self.client_id = identity.get("client_id", "").replace(":", "").lower()
-                self.uuid1 = identity.get("uuid1", "")
-                self.uuid2 = identity.get("uuid2", "")
+                self.handshake_packets = identity.get("handshake_packets", [])
             else:
                 raise ValueError("identity.json not found")
         except Exception as e:
             raise ValueError(f"Failed to load identity.json: {e}")
         
-        if not all([self.client_id, self.uuid1, self.uuid2]):
-            raise ValueError("CRITICAL: Missing required fields in identity.json")
-        self._log("Identity loaded successfully.")
+        if not self.handshake_packets:
+            raise ValueError("CRITICAL: handshake_packets is required in identity.json")
+        self._log("handshake_packets loaded")
 
     # ================= 协议打包与解析层 =================
     def _decode_protobuf(self, pb_data: bytes) -> dict[int, Any]:
@@ -146,39 +136,19 @@ class BikeClient:
         return results
 
     async def _send_handshake(self):
-        self._log("构建并发送动态握手包...")
+        if not self.handshake_packets:
+            raise ValueError("No handshake_packets found in identity.json")
         
-        # Pkt1: 手机宣告 Client ID (16字节 ASCII) [cite: 32, 35]
-        extra1 = self.client_id.encode('ascii') + b'\x00'
-        await self._send_command(self.CMD_2F31, extra=extra1, is_handshake=True)
-        
-        # Pkt2: 2f33 短查询 [cite: 32]
-        await self._send_command(self.CMD_2F33, is_handshake=True)
-        
-        # Pkt3: 0/1 格式重宣告 (对齐重放包) [cite: 32]
-        await self._send_command(self.CMD_2F31_SHORT, is_handshake=True)
-        
-        # Pkt4: 切换到同步状态 (Session 0300, DstSub 5503) 
-        timestamp = int(time.time())
-        uuid1_bytes = self.uuid1.encode('ascii') # 24 字节 [cite: 35]
-        uuid2_bytes = self.uuid2.encode('ascii') # 16 字节 [cite: 36]
-        
-        extra4 = (
-            b'\x0a\x18' + uuid1_bytes + 
-            b'\x12\x10' + uuid2_bytes + 
-            b'\x1d' + struct.pack("<I", timestamp) + 
-            b'\x20\xcb\xcc\xed\xcb\x06'
-        )
-        
-        await self._send_command(
-            self.CMD_2F33_LONG,
-            session=self.SESSION_SYNC,
-            field_cnt=2, 
-            extra=extra4, 
-            is_handshake=True,
-            dst_sub=self.DST_SUB_SYNC
-        )
-        self._log("握手序列发送完毕。")
+        self._log(f"Sending handshake...")
+        for i, pkt_hex in enumerate(self.handshake_packets):
+            pkt = bytes.fromhex(pkt_hex) if isinstance(pkt_hex, str) else bytes(pkt_hex)
+            try:
+                await self.client.write_gatt_char(self.CHAR_UUID, pkt, response=False)
+                self._log(f"Handshake pkt {i+1}/{len(self.handshake_packets)} sent")
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                self._log(f"Failed to send handshake pkt {i+1}: {e}")
+        self._log("Handshake complete.")
 
     async def _send_command(self, cmd_str: bytes, session=None, field_cnt=0, extra=b'', is_handshake=False, dst_sub=None):
         """立即构建并向底层写入一帧数据 [cite: 13]"""
@@ -207,7 +177,7 @@ class BikeClient:
         pkt = body + struct.pack("<H", crc)
         
         if is_handshake:
-            print(f"[Handshake Debug] TX -> {pkt.hex()}")
+            self._log(f"[Handshake Debug] TX -> {pkt.hex()}")
         
         try:
             await self.client.write_gatt_char(self.CHAR_UUID, pkt, response=False)
@@ -245,6 +215,132 @@ class BikeClient:
                 else: crc <<= 1
                 crc &= 0xFFFF
         return crc
+
+    async def set_resistance(self, level: int):
+        """设置阻力等级 (1-24)"""
+        if level < 1 or level > 24:
+            self._log(f"Resistance must be 1-24, got {level}")
+            return False
+
+        if hasattr(self, '_current_resistance') and level == self._current_resistance:
+            self._log(f"Resistance already {level}, skip")
+            return True
+
+        self._resistance_cnt = getattr(self, '_resistance_cnt', 0x06) + 1
+        cnt = self._resistance_cnt
+
+        payload = (
+            bytes.fromhex("3216ef235503")
+            + bytes([0xb0, cnt & 0xFF, (cnt + 9) & 0xFF])
+            + bytes.fromhex("04000002b53130362f36ff08")
+            + bytes([level])
+        )
+
+        packet = self._build_control_packet(payload)
+        await self._smart_write(packet)
+        
+        self._current_resistance = level
+        self._log(f"Set resistance: {level}")
+        return True
+
+    async def stop_bike(self):
+        """发送停止指令"""
+        self._resistance_cnt = getattr(self, '_resistance_cnt', 0x06) + 1
+        cnt = self._resistance_cnt
+
+        payload = (
+            bytes.fromhex("3216ef235503")
+            + bytes([0xb0, cnt & 0xFF, (cnt + 9) & 0xFF])
+            + bytes.fromhex("04000002b53130362f34ff0801")
+        )
+
+        packet = self._build_control_packet(payload)
+        await self._smart_write(packet)
+        
+        self._log("Sent stop command")
+        return True
+    
+    async def pause_bike(self):
+        """发送暂停指令"""
+        self._resistance_cnt = getattr(self, '_resistance_cnt', 0x06) + 1
+        cnt = self._resistance_cnt
+
+        payload = (
+            bytes.fromhex("3216ef235503")
+            + bytes([0xb0, cnt & 0xFF, (cnt + 9) & 0xFF])
+            + bytes.fromhex("04000002b53130362f34ff0804")
+        )
+
+        packet = self._build_control_packet(payload)
+        await self._smart_write(packet)
+        
+        self._log("Sent pause command")
+        return True
+
+    async def start_bike(self):
+        """发送开始/恢复指令"""
+        self._resistance_cnt = getattr(self, '_resistance_cnt', 0x06) + 1
+        cnt = self._resistance_cnt
+
+        payload = (
+            bytes.fromhex("3216ef235503")
+            + bytes([0xb0, cnt & 0xFF, (cnt + 9) & 0xFF])
+            + bytes.fromhex("04000002b53130362f34ff0803")
+        )
+
+        packet = self._build_control_packet(payload)
+        await self._smart_write(packet)
+        
+        self._log("Sent start command")
+        return True
+    
+    async def wake_bike(self):
+        """发送唤醒指令"""
+        self._resistance_cnt = getattr(self, '_resistance_cnt', 0x06) + 1
+        cnt = self._resistance_cnt
+
+        payload = (
+            bytes.fromhex("3216ef235503")
+            + bytes([0xb0, cnt & 0xFF, (cnt + 9) & 0xFF])
+            + bytes.fromhex("04000002b53130362f34ff0802")
+        )
+
+        packet = self._build_control_packet(payload)
+        await self._smart_write(packet)
+        
+        self._log("Sent wake command")
+        return True
+
+    def get_current_data(self) -> dict:
+        """获取当前单车数据"""
+        return {
+            "duration": getattr(self, '_duration', 0),
+            "distance": getattr(self, '_distance', 0),
+            "power": getattr(self, '_power', 0),
+            "cadence": getattr(self, '_rpm', 0),
+            "resistance": getattr(self, '_current_resistance', 1),
+            "calories": getattr(self, '_calories', 0),
+            "status": getattr(self, '_status', 2),
+            "speed": getattr(self, '_speed', 0.0),
+        }
+
+    def _build_control_packet(self, payload: bytes) -> bytes:
+        """构建控制指令数据包"""
+        header = bytearray([0xA5, 0xA5, 0xA0, self._seq])
+        header += struct.pack("<H", len(payload))
+        packet = header + payload
+        packet += struct.pack("<H", self._crc16(packet))
+        self._seq = (self._seq + 1) & 0xFF
+        return bytes(packet)
+
+    async def _smart_write(self, data: bytes):
+        """智能写入数据"""
+        if not self.client or not self.client.is_connected:
+            return
+        try:
+            await self.client.write_gatt_char(self.CHAR_UUID, data, response=False)
+        except Exception as e:
+            self._log(f"Write failed: {e}")
 
     # ================= 业务与数据处理层 =================
 
@@ -305,7 +401,18 @@ class BikeClient:
                 self.status_callback(self._current_status, new_status)
             self._current_status = new_status
 
-        # 7. 组装并推送数据
+        # 7. 存储数据供 get_current_data() 使用
+        self._rpm = res['rpm']
+        self._power = res['power']
+        self._duration = res['duration']
+        self._distance = res['distance']
+        self._calories = res['calories']
+        self._status = res['status_code']
+        self._speed = round(current_speed, 1)
+        if not hasattr(self, '_current_resistance'):
+            self._current_resistance = res['resistance']
+
+        # 8. 组装并推送数据
         bike_data = BikeData(**res, speed=round(current_speed, 1), raw_data=data.hex())
         self._last_calories = int(res['calories'])
         self.data_callback(bike_data)
@@ -374,8 +481,8 @@ class BikeClient:
                         self._log("Reconnected successfully! 🎉")
                         break
                     
-                    self._log("Reconnect failed. Waiting 5s before next attempt...")
-                    for _ in range(5):
+                    self._log(f"Reconnect failed. Waiting {int(self.RECONNECT_INTERVAL_SEC)}s before next attempt...")
+                    for _ in range(int(self.RECONNECT_INTERVAL_SEC)):
                         if not self.running: break
                         await asyncio.sleep(1.0)
                         

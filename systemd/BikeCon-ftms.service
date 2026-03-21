@@ -1,0 +1,19 @@
+# /etc/systemd/system/BikeCon-ftms.service
+[Unit]
+Description=BikeCon FTMS Server
+Requires=BikeCon-bike.service
+After=BikeCon-bike.service bluetooth.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/BikeCon
+ExecStart=/opt/BikeCon/venv/bin/python3 ftms_server.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
