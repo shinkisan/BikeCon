@@ -456,6 +456,7 @@ async def lifespan(app: FastAPI):
         os.remove(WEBAPP_SOCKET)
 
 app = FastAPI(lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 # --- 4. 路由接口 ---
 

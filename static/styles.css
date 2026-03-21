@@ -1,0 +1,264 @@
+        :root {
+            --bg-color: #2b2b2b;
+            --glass-bg: rgba(255, 255, 255, 0.15);
+            --glass-border: rgba(255, 255, 255, 0.3);
+            --active-bg: #e0e0e0;
+            --active-border: #fff;
+            --primary-accent: #00ff88;
+            
+            --unit: 1vmin; 
+            --stick-size: 30vmin; /* 保持你调整的大小 */
+            --btn-size: 13vmin;   /* 保持你调整的大小 */
+        }
+
+        * { box-sizing: border-box; touch-action: none; -webkit-tap-highlight-color: transparent; }
+        
+        body {
+            background-color: var(--bg-color);
+            background-image: radial-gradient(circle at 50% 50%, #333 0%, #1a1a1a 100%);
+            color: #eee;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 0; padding: 0;
+            height: 100vh; height: 100dvh;
+            overflow: hidden; user-select: none;
+            display: flex; flex-direction: column;
+        }
+
+        /* 竖屏 UI */
+        #portrait-layout { display: flex; flex-direction: column; height: 100%; width: 100%; }
+        header { height: 50px; background: #222; border-bottom: 1px solid #333; display: flex; align-items: center; justify-content: space-between; padding: 0 20px;}
+        main { flex: 1; }
+        .tab-content { display: none; height: 100%; flex-direction: column; align-items: center; justify-content: center; }
+        .tab-content.active { display: flex; }
+        nav { height: 60px; background: #222; border-top: 1px solid #333; display: flex; }
+        .nav-btn { flex: 1; display: flex; align-items: center; justify-content: center; color: #888; font-size: 0.9rem;}
+        .nav-btn.active { color: var(--primary-accent); }
+
+        /* 横屏手柄 UI */
+        #landscape-gamepad {
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: var(--bg-color); 
+            background-image: radial-gradient(circle at 50% 50%, #3a3a3a 0%, #1a1a1a 100%);
+            z-index: 9999; display: none; transform-origin: center center;
+        }
+        
+        #landscape-gamepad.rotated {
+            width: 100vh; height: 100vw; transform: rotate(90deg);
+            top: 50%; left: 50%; margin-left: -50vh; margin-top: -50vw;
+        }
+
+        /* 通用组件 */
+        .gp-btn, .trigger, .shoulder, .dpad-key, .btn-menu {
+            position: absolute; background: var(--glass-bg); 
+            border: 1px solid var(--glass-border); backdrop-filter: blur(8px);
+            /* 移除 transform transition，只保留颜色过渡，解决位移问题 */
+            transition: background 0.05s, border-color 0.05s, box-shadow 0.05s;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        
+        /* 按下状态 - 修复位移问题 */
+        .gp-btn:active, .trigger:active, .shoulder:active, .dpad-key:active, .btn-menu:active {
+            background: var(--active-bg); border-color: var(--active-border); color: #333;
+            /* 关键修改：不再使用 transform: scale() */
+            /* 改用内阴影制造按压感，位置绝对不动 */
+            box-shadow: inset 0 3px 8px rgba(0,0,0,0.6);
+            z-index: 500;
+        }
+
+        /* --- 退出按钮 --- */
+        .exit-pill {
+            position: absolute; top: 2vmin; left: 50%; transform: translateX(-50%);
+            padding: 1vmin 4vmin; border-radius: 20px;
+            background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(255,255,255,0.1);
+            color: #aaa; font-size: 3vmin; z-index: 300; pointer-events: auto; white-space: nowrap;
+        }
+        .exit-pill:active { background: #d32f2f; color: #fff; }
+
+        /* --- 扳机 & 肩键 --- */
+        .trigger {
+            top: 0; width: 25vmin; height: 8vmin; z-index: 50;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 3vmin; color: #ccc; letter-spacing: 1px; border-radius: 0 0 10px 10px;
+            border-top: none; 
+        }
+        .tr-l { left: 4vmin; } 
+        .tr-r { right: 4vmin; }
+
+        .shoulder {
+            top: 9vmin; width: 25vmin; height: 7vmin; z-index: 50;
+            display: flex; align-items: center; justify-content: center; 
+            color: #eee; font-weight: bold; font-size: 3vmin; border-radius: 10px;
+        }
+        .sh-l { left: 4vmin; }
+        .sh-r { right: 4vmin; }
+
+        /* --- 摇杆区域 --- */
+        .stick-zone {
+            position: absolute; 
+            width: var(--stick-size); height: var(--stick-size); 
+            border-radius: 50%;
+            background: radial-gradient(circle, #444 0%, #222 70%);
+            border: 2px solid #555; touch-action: none; z-index: 60;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.5);
+        }
+        .stick-knob {
+            position: absolute; top: 50%; left: 50%; 
+            width: 40%; height: 40%; 
+            background: #333; border-radius: 50%; transform: translate(-50%, -50%);
+            box-shadow: 0 2px 5px rgba(0,0,0,0.8); pointer-events: none;
+            border: 1px solid #555;
+            background-image: radial-gradient(circle at 30% 30%, #555 0%, #222 100%);
+        }
+        .stick-zone:active .stick-knob { background: #555; }
+        
+        .stick-l { bottom: 42vmin; left: 8vmin; }
+        .stick-r { bottom: 6vmin; right: 26vmin; }
+
+        /* --- ABXY --- */
+        .abxy-zone { 
+            position: absolute; top: 25vmin; right: 5vmin; 
+            width: 32vmin; height: 32vmin; 
+            transform: rotate(-10deg); z-index: 70;
+        }
+        .face-btn { 
+            position: absolute; 
+            width: var(--btn-size); height: var(--btn-size); 
+            border-radius: 50%; 
+            display: flex; align-items: center; justify-content: center; 
+            font-weight: bold; font-size: 5vmin;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+        }
+        .face-btn span { transform: rotate(10deg); }
+        .btn-y { top: 0; left: 50%; transform: translateX(-50%); color: #ffca28; }
+        .btn-x { top: 50%; left: 0; transform: translateY(-50%); color: #42a5f5; }
+        .btn-b { top: 50%; right: 0; transform: translateY(-50%); color: #ef5350; }
+        .btn-a { bottom: 0; left: 50%; transform: translateX(-50%); color: #00ff88; }
+
+        /* --- D-Pad --- */
+        .dpad-zone { 
+            position: absolute; bottom: 6vmin; left: 12vmin; 
+            width: 30vmin; height: 30vmin; 
+            z-index: 70;
+        }
+        .dp-btn { position: absolute; background: #333; border: 1px solid #555; }
+        .dp-u { top: 0; left: 34%; width: 32%; height: 34%; border-radius: 1vmin 1vmin 0 0; }
+        .dp-d { bottom: 0; left: 34%; width: 32%; height: 34%; border-radius: 0 0 1vmin 1vmin; }
+        .dp-l { top: 34%; left: 0; width: 34%; height: 32%; border-radius: 1vmin 0 0 1vmin; }
+        .dp-r { top: 34%; right: 0; width: 34%; height: 32%; border-radius: 0 1vmin 1vmin 0; }
+        .dp-c { top: 34%; left: 34%; width: 32%; height: 32%; background: #222; border:none; z-index: 2; pointer-events: none;}
+
+        /* --- Start/Select 修复 --- */
+        .center-stack { 
+            position: absolute; bottom: 2vmin; left: 50%; transform: translateX(-50%); 
+            display: flex; 
+            /* 关键修复：使用 space-between 强行拉开间距，并给足宽度 */
+            justify-content: space-between;
+            width: 40vmin; 
+            z-index: 900; 
+            pointer-events: none; 
+        }
+        .btn-menu { 
+            /* 稍微调小一点宽度，防止挤压 */
+            width: 12vmin; height: 6vmin; 
+            border-radius: 3vmin; 
+            display: flex; align-items: center; justify-content: center; 
+            font-size: 2vmin; color: #aaa; background: rgba(0,0,0,0.6);
+            pointer-events: auto; 
+            /* 确保相对定位正确 */
+            position: relative; 
+            left: auto; top: auto; right: auto; bottom: auto;
+        }
+
+        /* 仪表盘 */
+        .dashboard { width: 100%; max-width: 520px; display: flex; flex-direction: column; align-items: center; gap: 18px; }
+        .metrics { width: 90%; display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+        .metric-card {
+            background: #1e1e1e; border: 1px solid #333; border-radius: 12px;
+            padding: 14px 10px; text-align: center; box-shadow: 0 6px 16px rgba(0,0,0,0.35);
+        }
+        .metric-label { font-size: 0.72rem; color: #9aa0a6; letter-spacing: 0.08em; }
+        .metric-value { font-size: 2.2rem; font-weight: 700; color: var(--primary-accent); line-height: 1.1; }
+        .metric-value.inactive { color: #555; }
+        .metric-unit { font-size: 0.75rem; color: #777; margin-left: 6px; }
+        .status-line { font-size: 0.85rem; color: #888; padding: 4px 10px; border-radius: 999px; background: rgba(255,255,255,0.04); }
+        .controls { width: 90%; max-width: 520px; display: flex; flex-direction: column; gap: 12px; }
+        .ctrl-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+        .ctrl-btn {
+            background: #202020; border: 1px solid #3a3a3a; border-radius: 12px; color: #ddd;
+            padding: 12px 10px; font-size: 0.95rem; letter-spacing: 0.05em;
+            box-shadow: 0 6px 14px rgba(0,0,0,0.35);
+        }
+        .ctrl-btn.primary { background: #00ff88; color: #0a1a12; border-color: #00ff88; font-weight: 700; }
+        .ctrl-btn.danger { background: #3a1c1c; color: #ffb3b3; border-color: #5a2b2b; font-weight: 700; }
+        .ctrl-btn.loading { position: relative; color: #999; }
+        .ctrl-btn.loading::after {
+            content: "";
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            margin-left: 8px;
+            border: 2px solid #666;
+            border-top-color: var(--primary-accent);
+            border-radius: 50%;
+            animation: btnspin 0.8s linear infinite;
+            vertical-align: middle;
+        }
+        @keyframes btnspin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        .dial-box {
+            background: #1b1b1b; border: 1px solid #333; border-radius: 14px; padding: 14px 16px;
+            display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center;
+            box-shadow: 0 6px 16px rgba(0,0,0,0.35);
+        }
+        .dial-label { font-size: 0.8rem; color: #9aa0a6; letter-spacing: 0.08em; }
+        .dial-value { font-size: 1.4rem; color: var(--primary-accent); font-weight: 700; text-align: right; }
+        .dial-range { grid-column: 1 / -1; appearance: none; width: 100%; height: 8px; border-radius: 999px;
+            background: linear-gradient(90deg, #00ff88 0%, #0f6 40%, #2b2b2b 40%);
+            outline: none;
+        }
+        .dial-range::-webkit-slider-thumb {
+            appearance: none; width: 22px; height: 22px; border-radius: 50%;
+            background: #00ff88; border: 2px solid #0b1a12; box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+        }
+        .dial-range::-moz-range-thumb {
+            width: 22px; height: 22px; border-radius: 50%;
+            background: #00ff88; border: 2px solid #0b1a12; box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+        }
+        .dial-box.inactive .dial-label,
+        .dial-box.inactive .dial-value { color: #666; }
+        .dial-box.inactive .dial-range { background: #333; }
+        .dial-box.inactive .dial-range::-webkit-slider-thumb {
+            background: #666; border-color: #333; box-shadow: none;
+        }
+        .dial-box.inactive .dial-range::-moz-range-thumb {
+            background: #666; border-color: #333; box-shadow: none;
+        }
+        .dial-scale { display: flex; justify-content: space-between; font-size: 0.7rem; color: #666; }
+        .cfg-box { width: 90%; max-width: 400px; padding: 20px; background: #222; border-radius: 10px; }
+        select { width: 100%; padding: 10px; background: #111; color: #fff; border: 1px solid #444; margin-top: 10px; border-radius: 5px; }
+
+        .history-wrap { width: 92%; max-width: 640px; height: 100%; display: flex; flex-direction: column; gap: 12px; padding-top: 10px; }
+        .history-header { width: 100%; display: flex; align-items: center; justify-content: space-between; }
+        .history-title { font-size: 1rem; letter-spacing: 0.08em; color: #9aa0a6; }
+        .history-list { width: 100%; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; padding-bottom: 80px; }
+        .history-card {
+            background: #1e1e1e; border: 1px solid #333; border-radius: 12px;
+            padding: 12px 14px; box-shadow: 0 6px 16px rgba(0,0,0,0.35);
+            display: grid; grid-template-columns: 1fr auto; gap: 8px;
+        }
+        .history-main { display: flex; flex-direction: column; gap: 6px; }
+        .history-time { font-size: 0.95rem; color: #e0e0e0; }
+        .history-sub { font-size: 0.8rem; color: #888; }
+        .history-metrics { text-align: right; font-size: 0.85rem; color: #9aa0a6; }
+        .history-empty { color: #777; font-size: 0.9rem; padding: 20px 0; text-align: center; }
+
+        @media (max-width: 420px) {
+            .metrics { grid-template-columns: 1fr; }
+            .ctrl-row { grid-template-columns: 1fr; }
+        }
+        @media (orientation: portrait) {
+            .history-header { flex-direction: column; align-items: flex-start; gap: 10px; }
+        }
+    

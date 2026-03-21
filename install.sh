@@ -128,6 +128,10 @@ for pyfile in "$SCRIPT_DIR"/*.py; do
     fi
 done
 cp "$SCRIPT_DIR/index.html" /opt/BikeCon/ 2>/dev/null || true
+if [[ -d "$SCRIPT_DIR/static" ]]; then
+    rm -rf /opt/BikeCon/static
+    cp -r "$SCRIPT_DIR/static" /opt/BikeCon/
+fi
 echo -e "${GREEN}✓ Application code copied${NC}"
 echo ""
 

@@ -79,7 +79,6 @@ class BikeClient:
         self._last_calories = 0
         self._prev_dist = None
         self._prev_dur = None
-        self.reconnect_interval_sec = self.RECONNECT_INTERVAL_SEC
         
         # 任务控制
         self._watchdog_task: Optional[asyncio.Task] = None
@@ -482,8 +481,8 @@ class BikeClient:
                         self._log("Reconnected successfully! 🎉")
                         break
                     
-                    self._log(f"Reconnect failed. Waiting {int(self.reconnect_interval_sec)}s before next attempt...")
-                    for _ in range(int(self.reconnect_interval_sec)):
+                    self._log(f"Reconnect failed. Waiting {int(self.RECONNECT_INTERVAL_SEC)}s before next attempt...")
+                    for _ in range(int(self.RECONNECT_INTERVAL_SEC)):
                         if not self.running: break
                         await asyncio.sleep(1.0)
                         

@@ -114,6 +114,7 @@ class BikeService:
         self.mixer = AsyncUnixClient(MIXER_SOCKET, "Mixer")
         self.pubsub_server = None
         self.control_server = None
+        self._bike_connected = False
 
     async def handle_pubsub_connection(self, reader, writer):
         """处理 pubsub 订阅者连接"""
@@ -198,6 +199,21 @@ class BikeService:
         print(f"[BikeService] Control server: {CONTROL_SOCKET}")
 
     def on_data(self, data: BikeData):
+        if data.raw_data == "RECONNECTING":
+            if self._bike_connected:
+                self._bike_connected = False
+                link_msg = {"type": "bike_link", "connected": False}
+                self.broadcast_to_subscribers(link_msg)
+                asyncio.create_task(self.webapp.send(link_msg))
+                asyncio.create_task(self.mixer.send(link_msg))
+            return
+        if not self._bike_connected:
+            self._bike_connected = True
+            link_msg = {"type": "bike_link", "connected": True}
+            self.broadcast_to_subscribers(link_msg)
+            asyncio.create_task(self.webapp.send(link_msg))
+            asyncio.create_task(self.mixer.send(link_msg))
+
         msg = {
             "type": "bike_data",
             "rpm": data.rpm,
@@ -245,8 +261,7 @@ class BikeService:
             "type": "bike_status",
             "active": is_active,
             "status_name": new_status.name,
-            "status_code": new_status.value,
-            "reconnect_interval_sec": getattr(self.client, "reconnect_interval_sec", 5)
+            "status_code": new_status.value
         }
         
         self.broadcast_to_subscribers(status_msg)
