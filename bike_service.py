@@ -1,6 +1,5 @@
 import asyncio
 import json
-import socket
 import os
 import logging
 import logging.handlers
@@ -13,7 +12,6 @@ from bike_driver import BikeClient, BikeData, BikeStatus
 
 IDENTITY_PATH = Path("/etc/BikeCon/identity.json")
 
-# Load bike MAC from identity.json (REQUIRED).
 BIKE_MAC = None
 try:
     if IDENTITY_PATH.exists():
@@ -23,84 +21,82 @@ try:
             if isinstance(mac, str) and mac:
                 BIKE_MAC = mac
 except Exception as e:
-    print(f"[BikeService] Failed to load bike_mac from identity.json: {e}")
+    print(f"[BikeService] Failed to load bike_mac: {e}")
 
 if not BIKE_MAC:
-    raise ValueError(
-        "[BikeService] CRITICAL: 'bike_mac' not found or empty in identity.json. "
-        "This field is required and contains your device's Bluetooth MAC address. "
-        "Please configure it locally in identity.json (add to .gitignore to keep it private)."
-    )
-SOCKET_PATH = "/var/run/BikeCon/mixer.sock"
-WEBAPP_SOCKET = "/var/run/BikeCon/webapp.sock"
-BIKE_ACTIVE_FLAG = "/var/run/BikeCon/bike_active"
+    raise ValueError("[BikeService] bike_mac not found in identity.json")
 
-# 确保运行时目录存在
+RUN_DIR = Path("/var/run/BikeCon")
+PUBSUB_SOCKET = RUN_DIR / "pubsub.sock"
+CONTROL_SOCKET = RUN_DIR / "control.sock"
+MIXER_SOCKET = RUN_DIR / "mixer.sock"
+WEBAPP_SOCKET = RUN_DIR / "webapp.sock"
+BIKE_ACTIVE_FLAG = RUN_DIR / "bike_active"
+
 try:
-    os.makedirs("/var/run/BikeCon", exist_ok=True)
-except PermissionError:
-    # 降级方案：使用 /tmp 作为备用
-    SOCKET_PATH = "/tmp/BikeCon/mixer.sock"
-    WEBAPP_SOCKET = "/tmp/BikeCon/webapp.sock"
-    BIKE_ACTIVE_FLAG = "/tmp/BikeCon/bike_active"
-    os.makedirs("/tmp/BikeCon", exist_ok=True)
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+except PermissionError as e:
+    raise RuntimeError(f"[BikeService] {RUN_DIR} not writable. Check systemd RuntimeDirectory/permissions.") from e
 
-# --- 日志配置 ---
-RAM_DISK_DIR = "/dev/shm/BikeCon" 
-os.makedirs(RAM_DISK_DIR, exist_ok=True)
-# 内存中的临时日志路径
-RAM_LOG_PATH = os.path.join(RAM_DISK_DIR, "bike_raw_data.log")
-# 磁盘上的持久化目录
-PERSISTENT_LOG_DIR = "/var/log/BikeCon"
-os.makedirs(PERSISTENT_LOG_DIR, exist_ok=True)
+RAM_DISK_DIR = Path("/dev/shm/BikeCon")
+RAM_DISK_DIR.mkdir(parents=True, exist_ok=True)
+RAM_LOG_PATH = RAM_DISK_DIR / "bike_raw_data.log"
+PERSISTENT_LOG_DIR = Path("/var/log/BikeCon")
+PERSISTENT_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-MAX_LOG_SIZE = 2 * 1024 * 1024 
+MAX_LOG_SIZE = 2 * 1024 * 1024
 BACKUP_COUNT = 1
 
 logger = logging.getLogger("BikeData")
 logger.setLevel(logging.INFO)
-
 handler = logging.handlers.RotatingFileHandler(
-    RAM_LOG_PATH, maxBytes=MAX_LOG_SIZE, backupCount=BACKUP_COUNT
+    str(RAM_LOG_PATH), maxBytes=MAX_LOG_SIZE, backupCount=BACKUP_COUNT
 )
 formatter = logging.Formatter('%(asctime)s.%(msecs)03d | %(message)s', datefmt='%H:%M:%S')
 handler.setFormatter(formatter)
 logger.addHandler(handler)
+BIKE_DEBUG = os.getenv("BIKECON_BIKE_DEBUG", "0") == "1"
+
+
+def _debug_log(msg: str):
+    if BIKE_DEBUG:
+        print(msg)
 
 def save_logs_to_disk():
-    print("[Log] 正在将内存日志写入磁盘...")
+    print("[Log] Saving logs to disk...")
     try:
-        # 获取内存中所有的日志文件（包括旋转产生的 .1, .2 等）
         for temp_file in glob.glob(f"{RAM_LOG_PATH}*"):
             if os.path.exists(temp_file):
                 filename = os.path.basename(temp_file)
-                dest_path = os.path.join(PERSISTENT_LOG_DIR, filename)
-                
-                # 核心检查：如果源路径和目标路径相同，则跳过
+                dest_path = PERSISTENT_LOG_DIR / filename
                 if os.path.abspath(temp_file) == os.path.abspath(dest_path):
                     continue
-                    
-                shutil.copy2(temp_file, dest_path)
-                print(f"[Log] 已同步到磁盘: {dest_path}")
+                shutil.copy2(temp_file, str(dest_path))
     except Exception as e:
-        print(f"[Log] 保存失败: {e}")
+        print(f"[Log] Save failed: {e}")
 
 atexit.register(save_logs_to_disk)
 
-# --- 异步 Unix Socket 客户端 ---
+
 class AsyncUnixClient:
     def __init__(self, path, name):
         self.path = path
         self.name = name
         self.writer = None
+        self._last_error_log_ts = 0.0
 
     async def ensure_connection(self):
         if self.writer and not self.writer.transport.is_closing():
             return True
         try:
             _, self.writer = await asyncio.open_unix_connection(self.path)
+            _debug_log(f"[BikeService] Unix client connected -> {self.name} ({self.path})")
             return True
-        except:
+        except Exception as e:
+            now = asyncio.get_event_loop().time()
+            if now - self._last_error_log_ts >= 5.0:
+                _debug_log(f"[BikeService] Unix connect failed -> {self.name}: {e}")
+                self._last_error_log_ts = now
             self.writer = None
             return False
 
@@ -109,123 +105,237 @@ class AsyncUnixClient:
             try:
                 self.writer.write(json.dumps(data).encode() + b'\n')
                 await self.writer.drain()
-            except:
+            except Exception as e:
+                now = asyncio.get_event_loop().time()
+                if now - self._last_error_log_ts >= 5.0:
+                    _debug_log(f"[BikeService] Unix send failed -> {self.name}: {e}")
+                    self._last_error_log_ts = now
                 self.writer = None
 
-class BikeBridge:
-    def __init__(self):
-        # 初始化持久连接
-        self.mixer = AsyncUnixClient(SOCKET_PATH, "Mixer")
-        self.webapp = AsyncUnixClient(WEBAPP_SOCKET, "WebApp")
 
+class BikeService:
+    def __init__(self):
         self.client = BikeClient(
-            BIKE_MAC, 
-            data_callback=self.on_data, 
+            BIKE_MAC,
+            data_callback=self.on_data,
             status_callback=self.on_status
         )
+        
+        self.pubsub_writers = set()
+        self.webapp = AsyncUnixClient(WEBAPP_SOCKET, "WebApp")
+        self.mixer = AsyncUnixClient(MIXER_SOCKET, "Mixer")
+        self.pubsub_server = None
+        self.control_server = None
+        self._bike_connected = False
+        self._last_link_state = None
+        self._last_status_msg = None
 
-    def send_data(self, payload):
-        """异步发送数据到 Mixer 和 WebApp"""
-        asyncio.create_task(self.mixer.send(payload))
-        asyncio.create_task(self.webapp.send(payload))
+    async def handle_pubsub_connection(self, reader, writer):
+        """处理 pubsub 订阅者连接"""
+        self.pubsub_writers.add(writer)
+        _debug_log(f"[BikeService] PubSub subscriber connected")
+        try:
+            while True:
+                data = await reader.read(1)
+                if not data:
+                    break
+        except:
+            pass
+        finally:
+            self.pubsub_writers.discard(writer)
+            writer.close()
+            await writer.wait_closed()
+
+    async def handle_control_connection(self, reader, writer):
+        """处理控制命令连接 (来自 FTMS 等)"""
+        _debug_log(f"[BikeService] Control client connected")
+        try:
+            while True:
+                line = await reader.readline()
+                if not line:
+                    break
+                try:
+                    msg = json.loads(line.decode().strip())
+                    await self.handle_control_message(msg)
+                except json.JSONDecodeError:
+                    continue
+        except Exception as e:
+            print(f"[BikeService] Control error: {e}")
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async def handle_control_message(self, msg: dict):
+        """处理控制消息"""
+        cmd_type = msg.get("type")
+        _debug_log(f"[BikeService] Control: {cmd_type} - {msg}")
+        
+        if cmd_type == "set_resistance":
+            level = msg.get("level", 10)
+            await self.client.set_resistance(level)
+        elif cmd_type == "start":
+            await self.client.start_bike()
+        elif cmd_type == "stop":
+            await self.client.stop_bike()
+        elif cmd_type == "pause":
+            await self.client.pause_bike()
+        elif cmd_type == "wake":
+            await self.client.wake_bike()
+
+    def broadcast_to_subscribers(self, data: dict):
+        """广播数据到所有订阅者"""
+        msg = json.dumps(data).encode() + b'\n'
+        msg_type = data.get("type")
+        if msg_type in ("bike_link", "bike_status"):
+            _debug_log(f"[BikeService] Broadcast {msg_type} to pubsub subscribers={len(self.pubsub_writers)} payload={data}")
+        for writer in list(self.pubsub_writers):
+            try:
+                writer.write(msg)
+            except:
+                pass
+
+    async def start_servers(self):
+        # 启动 pubsub 服务器
+        if PUBSUB_SOCKET.exists():
+            PUBSUB_SOCKET.unlink()
+        self.pubsub_server = await asyncio.start_unix_server(
+            self.handle_pubsub_connection,
+            path=str(PUBSUB_SOCKET)
+        )
+        os.chmod(PUBSUB_SOCKET, 0o666)
+        _debug_log(f"[BikeService] PubSub server: {PUBSUB_SOCKET}")
+        
+        # 启动 control 服务器
+        if CONTROL_SOCKET.exists():
+            CONTROL_SOCKET.unlink()
+        self.control_server = await asyncio.start_unix_server(
+            self.handle_control_connection,
+            path=str(CONTROL_SOCKET)
+        )
+        os.chmod(CONTROL_SOCKET, 0o666)
+        _debug_log(f"[BikeService] Control server: {CONTROL_SOCKET}")
 
     def on_data(self, data: BikeData):
-        """蓝牙回调：转发优化后的全量数据"""
-        
-        # 1. 组装全量数据消息体 (新增 speed 和 distance)
+        if data.raw_data == "RECONNECTING":
+            _debug_log(f"[BikeService] on_data RECONNECTING received (was_connected={self._bike_connected})")
+            if self._bike_connected:
+                self._bike_connected = False
+            link_msg = {"type": "bike_link", "connected": False}
+            self._last_link_state = link_msg
+            self.broadcast_to_subscribers(link_msg)
+            asyncio.create_task(self.webapp.send(link_msg))
+            asyncio.create_task(self.mixer.send(link_msg))
+            return
+        if not self._bike_connected:
+            self._bike_connected = True
+            link_msg = {"type": "bike_link", "connected": True}
+            self._last_link_state = link_msg
+            _debug_log("[BikeService] First bike data after offline -> bike_link connected=True")
+            self.broadcast_to_subscribers(link_msg)
+            asyncio.create_task(self.webapp.send(link_msg))
+            asyncio.create_task(self.mixer.send(link_msg))
+
         msg = {
-            "type": "bike_data", 
+            "type": "bike_data",
             "rpm": data.rpm,
             "power": data.power,
-            "speed": data.speed,       # 新增: 实时速度 (km/h)
-            "distance": data.distance, # 新增: 累计距离 (m)
+            "speed": data.speed,
+            "distance": data.distance,
             "duration": data.duration,
             "resistance": data.resistance,
             "calories": data.calories,
-            "status": data.status_code # 建议将字段名改为 status，因为它代表机器状态
+            "status": data.status_code
         }
         
-        # 2. 优化日志格式
-        # 增加 SPD(速度) 和 DST(距离)，并将 SEQ 改为更准确的 STA(状态)
-        raw_hex = data.raw_data if data.raw_data else "N/A"
-        
         log_msg = (
-            f"HEX: {raw_hex:<48} | "
-            f"RPM: {data.rpm:<3} | "
-            f"PWR: {data.power:<3} | "
-            f"SPD: {data.speed:<4.1f} | "  # 新增速度显示
-            f"DST: {data.distance:<5} | "  # 新增距离显示
-            f"RES: {data.resistance:<2} | "
-            f"TIME: {data.duration:<4} | "
-            f"KCAL: {data.calories:<3.1f} | "
-            f"STA: {data.status_code:02X}"   # 原 SEQ 现改为 STA (Status)
+            f"HEX: {data.raw_data if data.raw_data else 'N/A':<48} | "
+            f"RPM: {data.rpm:<3} | PWR: {data.power:<3} | "
+            f"SPD: {data.speed:<4.1f} | DST: {data.distance:<5} | "
+            f"RES: {data.resistance:<2} | TIME: {data.duration:<4} | "
+            f"KCAL: {data.calories:<3.1f} | STA: {data.status_code:02X}"
         )
         
         logger.info(log_msg)
-        self.send_data(msg)
-    
-    def on_status(self, old_status, new_status):
-        # 严格判断：只有 3 (ACTIVE) 才算真正激活
-        is_active = (new_status == BikeStatus.ACTIVE)
-        print(f"\n[Bridge] 状态变更: {old_status.name} -> {new_status.name}")
+        
+        # 广播到 pubsub 订阅者
+        self.broadcast_to_subscribers(msg)
+        
+        # 发送到 WebApp 和 Mixer
+        asyncio.create_task(self.webapp.send(msg))
+        asyncio.create_task(self.mixer.send(msg))
 
-        # 控制系统层面的活跃标志文件
+    def on_status(self, old_status, new_status):
+        is_active = (new_status == BikeStatus.ACTIVE)
+        print(f"\n[BikeService] Status: {old_status.name} -> {new_status.name}")
+
+        if not self._bike_connected:
+            self._bike_connected = True
+            link_msg = {"type": "bike_link", "connected": True}
+            self._last_link_state = link_msg
+            _debug_log("[BikeService] on_status forced bike_link connected=True (status arrived before data)")
+            self.broadcast_to_subscribers(link_msg)
+            asyncio.create_task(self.webapp.send(link_msg))
+            asyncio.create_task(self.mixer.send(link_msg))
+
         try:
             if is_active:
-                with open(BIKE_ACTIVE_FLAG, 'w') as f: f.write("1")
+                BIKE_ACTIVE_FLAG.write_text("1")
             else:
-                if os.path.exists(BIKE_ACTIVE_FLAG):
-                    os.remove(BIKE_ACTIVE_FLAG)
+                if BIKE_ACTIVE_FLAG.exists():
+                    BIKE_ACTIVE_FLAG.unlink()
         except Exception as e:
             print(f"Flag Error: {e}")
-        
-        # 给前端发送更细致的消息，前端可以据此切换 UI 状态（如显示“已暂停”、“321倒计时”等）
-        self.send_data({
-            "type": "bike_status", 
+
+        status_msg = {
+            "type": "bike_status",
             "active": is_active,
-            "status_name": new_status.name, # 发送 "READY", "IDLE", "ACTIVE", "PAUSED"
-            "status_code": new_status.value # 发送 1, 2, 3, 4
-        })
+            "status_name": new_status.name,
+            "status_code": new_status.value
+        }
+        self._last_status_msg = status_msg
+        
+        self.broadcast_to_subscribers(status_msg)
+        asyncio.create_task(self.webapp.send(status_msg))
+        asyncio.create_task(self.mixer.send(status_msg))
 
     async def run(self):
-        print(f"[Bridge] 启动蓝牙服务 ({BIKE_MAC})...")
+        print(f"[BikeService] Starting ({BIKE_MAC})...")
+        
+        await self.start_servers()
+        
         loop = asyncio.get_running_loop()
         stop_event = asyncio.Event()
 
-        def _signal_handler():
-            print("[Bridge] 收到终止信号，开始清理...")
+        def signal_handler():
+            print("[BikeService] Shutting down...")
             stop_event.set()
 
-        # 注册 Unix 信号处理（也适用于 Ctrl+C）
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                loop.add_signal_handler(sig, _signal_handler)
+                loop.add_signal_handler(sig, signal_handler)
             except NotImplementedError:
-                # Windows 的事件循环不支持 add_signal_handler
                 pass
 
         try:
-            # 【修改点 1】只需要调用一次 start()。
-            # 驱动内部的看门狗会自动接管：尝试连接、断线重连等所有脏活累活。
             await self.client.start()
-            print(f"\n[Bridge] 驱动已启动...")
-
-            # 【修改点 2】抛弃原先的 while True 和 sleep 循环。
-            # 直接挂起主协程，直到收到终止信号 (Ctrl+C 或 systemctl stop)
+            print(f"[BikeService] BikeClient started")
             await stop_event.wait()
-
         except Exception as e:
-            print(f"[Bridge] 运行时严重错误: {e}")
-            
+            print(f"[BikeService] Error: {e}")
         finally:
-            # 【修改点 3】在退出前调用统一的 stop() 接口，安全清理所有任务和蓝牙连接
-            print("[Bridge] 正在停止蓝牙驱动...")
+            print("[BikeService] Stopping BikeClient...")
             await self.client.stop()
-            print("[Bridge] 已安全退出")
+            
+            if self.pubsub_server:
+                self.pubsub_server.close()
+            if self.control_server:
+                self.control_server.close()
+            print("[BikeService] Exited")
+
 
 if __name__ == "__main__":
-    bridge = BikeBridge()
+    service = BikeService()
     try:
-        asyncio.run(bridge.run())
+        asyncio.run(service.run())
     except KeyboardInterrupt:
         pass

@@ -1,6 +1,6 @@
 # BikeCon
 
-BikeCon 是一个将 **Keep 动感单车** 协议解析并映射为 **虚拟游戏手柄** 的系统。它允许你通过 Linux 设备（推荐树莓派 Zero 2W）作为中继，在电脑上使用单车作为输入设备 。
+BikeCon 是一个将 **Keep 动感单车** 协议解析并映射为 **虚拟游戏手柄** 的系统。它允许你通过 Linux 设备（推荐树莓派 Zero 2W）作为中继，在电脑上使用单车作为输入设备 。它同时附带一个FTMS兼容层，提供给想要游玩GTBIKEV，或者Zwift的玩家。
 
 ## 硬件需求
 - **Keep 动感单车**: 目前已支持 Keep C2 Lite（固件版本1.0.1）。
@@ -76,13 +76,24 @@ sudo ./uninstall.sh
 
 ## 服务说明
 
-BikeCon 包含以下5个systemd服务，按启动顺序排列：
+BikeCon 包含以下 6 个 systemd 服务，按启动顺序排列：
 
 1. **BikeCon-hardware.service** - 配置 USB Gadget，模拟 HID 手柄
 2. **BikeCon-mixer.service** - 混合单车数据与手柄按键
 3. **BikeCon-bike.service** - BLE自行车连接
 4. **BikeCon-joycon.service** - Joy-Con输入处理
 5. **BikeCon-web.service** - Web界面 (端口8000)
+6. **BikeCon-ftms.service** - FTMS 兼容层（对外提供 FTMS BLE 服务）
+
+## FTMS 兼容层（可选）
+
+项目内置了一个 FTMS 兼容层，可将单车数据通过标准 FTMS 服务对外广播，用于兼容部分第三方应用（例如 **GTBIKEV**）。
+
+- 默认状态：`config.json` 中 `ftms_layer_enabled` 默认是 `false`（关闭）
+- 启用方式 1（推荐）：打开 Web 设置页，将“FTMS 服务”切换为开启
+- 启用方式 2：手动编辑 `/etc/BikeCon/config.json`，将 `ftms_layer_enabled` 改为 `true`
+
+FTMS 服务进程会轮询配置并自动生效，通常无需手动重启服务。
 
 ## Web界面
 
@@ -132,5 +143,12 @@ journalctl -u BikeCon-bike.service -f
 
 本项目仅用于技术研究与个人学习，不保证对所有硬件和固件版本的兼容性。因使用本项目导致的设备问题或 Keep 账号异常，作者概不负责。
 
-
 本项目大量使用AI，代码风格杂乱，中英双语日志和备注乱飞，有时间会慢慢打磨😝。
+
+## 特别感谢
+
+FTMS 兼容层功能的实现参考了以下项目的代码与思路，特此感谢：
+
+- https://github.com/happyderekl/Bike-FTMS-Bridge
+
+

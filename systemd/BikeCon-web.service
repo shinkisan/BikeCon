@@ -5,11 +5,13 @@ After=BikeCon-mixer.service network.target
 
 [Service]
 Type=simple
-User=root
+User=bikecon
+Group=bikecon
 WorkingDirectory=/opt/BikeCon
 ExecStart=/opt/BikeCon/venv/bin/python3 -m uvicorn webapp:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=5
+TimeoutStopSec=12
 Environment=PYTHONUNBUFFERED=1
 
 [Install]

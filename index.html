@@ -3,237 +3,115 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Keep 控制台</title>
-    <style>
-        :root {
-            --bg-color: #2b2b2b;
-            --glass-bg: rgba(255, 255, 255, 0.15);
-            --glass-border: rgba(255, 255, 255, 0.3);
-            --active-bg: #e0e0e0;
-            --active-border: #fff;
-            --primary-accent: #00ff88;
-            
-            --unit: 1vmin; 
-            --stick-size: 30vmin; /* 保持你调整的大小 */
-            --btn-size: 13vmin;   /* 保持你调整的大小 */
-        }
-
-        * { box-sizing: border-box; touch-action: none; -webkit-tap-highlight-color: transparent; }
-        
-        body {
-            background-color: var(--bg-color);
-            background-image: radial-gradient(circle at 50% 50%, #333 0%, #1a1a1a 100%);
-            color: #eee;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            margin: 0; padding: 0;
-            height: 100vh; height: 100dvh;
-            overflow: hidden; user-select: none;
-            display: flex; flex-direction: column;
-        }
-
-        /* 竖屏 UI */
-        #portrait-layout { display: flex; flex-direction: column; height: 100%; width: 100%; }
-        header { height: 50px; background: #222; border-bottom: 1px solid #333; display: flex; align-items: center; justify-content: space-between; padding: 0 20px;}
-        main { flex: 1; }
-        .tab-content { display: none; height: 100%; flex-direction: column; align-items: center; justify-content: center; }
-        .tab-content.active { display: flex; }
-        nav { height: 60px; background: #222; border-top: 1px solid #333; display: flex; }
-        .nav-btn { flex: 1; display: flex; align-items: center; justify-content: center; color: #888; font-size: 0.9rem;}
-        .nav-btn.active { color: var(--primary-accent); }
-
-        /* 横屏手柄 UI */
-        #landscape-gamepad {
-            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-            background: var(--bg-color); 
-            background-image: radial-gradient(circle at 50% 50%, #3a3a3a 0%, #1a1a1a 100%);
-            z-index: 9999; display: none; transform-origin: center center;
-        }
-        
-        #landscape-gamepad.rotated {
-            width: 100vh; height: 100vw; transform: rotate(90deg);
-            top: 50%; left: 50%; margin-left: -50vh; margin-top: -50vw;
-        }
-
-        /* 通用组件 */
-        .gp-btn, .trigger, .shoulder, .dpad-key, .btn-menu {
-            position: absolute; background: var(--glass-bg); 
-            border: 1px solid var(--glass-border); backdrop-filter: blur(8px);
-            /* 移除 transform transition，只保留颜色过渡，解决位移问题 */
-            transition: background 0.05s, border-color 0.05s, box-shadow 0.05s;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-        }
-        
-        /* 按下状态 - 修复位移问题 */
-        .gp-btn:active, .trigger:active, .shoulder:active, .dpad-key:active, .btn-menu:active {
-            background: var(--active-bg); border-color: var(--active-border); color: #333;
-            /* 关键修改：不再使用 transform: scale() */
-            /* 改用内阴影制造按压感，位置绝对不动 */
-            box-shadow: inset 0 3px 8px rgba(0,0,0,0.6);
-            z-index: 500;
-        }
-
-        /* --- 退出按钮 --- */
-        .exit-pill {
-            position: absolute; top: 2vmin; left: 50%; transform: translateX(-50%);
-            padding: 1vmin 4vmin; border-radius: 20px;
-            background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(255,255,255,0.1);
-            color: #aaa; font-size: 3vmin; z-index: 300; pointer-events: auto; white-space: nowrap;
-        }
-        .exit-pill:active { background: #d32f2f; color: #fff; }
-
-        /* --- 扳机 & 肩键 --- */
-        .trigger {
-            top: 0; width: 25vmin; height: 8vmin; z-index: 50;
-            display: flex; align-items: center; justify-content: center;
-            font-size: 3vmin; color: #ccc; letter-spacing: 1px; border-radius: 0 0 10px 10px;
-            border-top: none; 
-        }
-        .tr-l { left: 4vmin; } 
-        .tr-r { right: 4vmin; }
-
-        .shoulder {
-            top: 9vmin; width: 25vmin; height: 7vmin; z-index: 50;
-            display: flex; align-items: center; justify-content: center; 
-            color: #eee; font-weight: bold; font-size: 3vmin; border-radius: 10px;
-        }
-        .sh-l { left: 4vmin; }
-        .sh-r { right: 4vmin; }
-
-        /* --- 摇杆区域 --- */
-        .stick-zone {
-            position: absolute; 
-            width: var(--stick-size); height: var(--stick-size); 
-            border-radius: 50%;
-            background: radial-gradient(circle, #444 0%, #222 70%);
-            border: 2px solid #555; touch-action: none; z-index: 60;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.5);
-        }
-        .stick-knob {
-            position: absolute; top: 50%; left: 50%; 
-            width: 40%; height: 40%; 
-            background: #333; border-radius: 50%; transform: translate(-50%, -50%);
-            box-shadow: 0 2px 5px rgba(0,0,0,0.8); pointer-events: none;
-            border: 1px solid #555;
-            background-image: radial-gradient(circle at 30% 30%, #555 0%, #222 100%);
-        }
-        .stick-zone:active .stick-knob { background: #555; }
-        
-        .stick-l { bottom: 42vmin; left: 8vmin; }
-        .stick-r { bottom: 6vmin; right: 26vmin; }
-
-        /* --- ABXY --- */
-        .abxy-zone { 
-            position: absolute; top: 25vmin; right: 5vmin; 
-            width: 32vmin; height: 32vmin; 
-            transform: rotate(-10deg); z-index: 70;
-        }
-        .face-btn { 
-            position: absolute; 
-            width: var(--btn-size); height: var(--btn-size); 
-            border-radius: 50%; 
-            display: flex; align-items: center; justify-content: center; 
-            font-weight: bold; font-size: 5vmin;
-            text-shadow: 0 1px 2px rgba(0,0,0,0.8);
-        }
-        .face-btn span { transform: rotate(10deg); }
-        .btn-y { top: 0; left: 50%; transform: translateX(-50%); color: #ffca28; }
-        .btn-x { top: 50%; left: 0; transform: translateY(-50%); color: #42a5f5; }
-        .btn-b { top: 50%; right: 0; transform: translateY(-50%); color: #ef5350; }
-        .btn-a { bottom: 0; left: 50%; transform: translateX(-50%); color: #00ff88; }
-
-        /* --- D-Pad --- */
-        .dpad-zone { 
-            position: absolute; bottom: 6vmin; left: 12vmin; 
-            width: 30vmin; height: 30vmin; 
-            z-index: 70;
-        }
-        .dp-btn { position: absolute; background: #333; border: 1px solid #555; }
-        .dp-u { top: 0; left: 34%; width: 32%; height: 34%; border-radius: 1vmin 1vmin 0 0; }
-        .dp-d { bottom: 0; left: 34%; width: 32%; height: 34%; border-radius: 0 0 1vmin 1vmin; }
-        .dp-l { top: 34%; left: 0; width: 34%; height: 32%; border-radius: 1vmin 0 0 1vmin; }
-        .dp-r { top: 34%; right: 0; width: 34%; height: 32%; border-radius: 0 1vmin 1vmin 0; }
-        .dp-c { top: 34%; left: 34%; width: 32%; height: 32%; background: #222; border:none; z-index: 2; pointer-events: none;}
-
-        /* --- Start/Select 修复 --- */
-        .center-stack { 
-            position: absolute; bottom: 2vmin; left: 50%; transform: translateX(-50%); 
-            display: flex; 
-            /* 关键修复：使用 space-between 强行拉开间距，并给足宽度 */
-            justify-content: space-between;
-            width: 40vmin; 
-            z-index: 900; 
-            pointer-events: none; 
-        }
-        .btn-menu { 
-            /* 稍微调小一点宽度，防止挤压 */
-            width: 12vmin; height: 6vmin; 
-            border-radius: 3vmin; 
-            display: flex; align-items: center; justify-content: center; 
-            font-size: 2vmin; color: #aaa; background: rgba(0,0,0,0.6);
-            pointer-events: auto; 
-            /* 确保相对定位正确 */
-            position: relative; 
-            left: auto; top: auto; right: auto; bottom: auto;
-        }
-
-        /* 仪表盘 */
-        .dash-val { font-size: 5rem; font-weight: bold; color: var(--primary-accent); }
-        .cfg-box { width: 90%; max-width: 400px; padding: 20px; background: #222; border-radius: 10px; }
-        select { width: 100%; padding: 10px; background: #111; color: #fff; border: 1px solid #444; margin-top: 10px; border-radius: 5px; }
-
-    </style>
+    <title data-i18n="app_title">BikeCon 控制台</title>
+    <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
 
     <div id="portrait-layout">
         <header>
-            <span style="color:var(--primary-accent); font-weight:bold;">Keep</span>
-            <span id="ws-status" style="font-size:0.8rem; color:#666">连接中...</span>
+            <span style="color:var(--primary-accent); font-weight:bold;" data-i18n="app_title">BikeCon 控制台</span>
+            <div style="display:flex; align-items:center; gap:10px;">
+                <span id="joycon-battery" style="font-size:0.8rem; color:#aaa" data-i18n="joycon_label">JoyCon: --</span>
+            </div>
         </header>
         <main>
             <div id="tab-bike" class="tab-content active">
-                <h1 id="rpm-val" style="font-size:5rem; color:var(--primary-accent); margin:0;">--</h1>
-                <p>RPM</p>
-                <div id="bt-status" style="margin-top:20px; font-size:0.8rem; color:#888">等待单车数据...</div>
+                <div class="dashboard">
+                    <div class="metrics">
+                        <div class="metric-card">
+                            <div class="metric-label" data-i18n="metric_rpm">踏频</div>
+                            <div class="metric-value inactive"><span id="rpm-val">--</span><span class="metric-unit">RPM</span></div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label" data-i18n="metric_power">功率</div>
+                            <div class="metric-value inactive"><span id="power-val">--</span><span class="metric-unit">W</span></div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label" data-i18n="metric_speed">速度</div>
+                            <div class="metric-value inactive"><span id="speed-val">--</span><span class="metric-unit">km/h</span></div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label" data-i18n="metric_resistance">阻力</div>
+                            <div class="metric-value inactive"><span id="resist-val">--</span><span class="metric-unit">Lv</span></div>
+                        </div>
+                    </div>
+                    <div id="bt-status" class="status-line" data-i18n="status_sync">获取单车状态中…</div>
+                    <div id="session-time" class="status-line">本次时长 --:--</div>
+                    <div class="controls">
+                        <div class="ctrl-row">
+                            <button id="start-btn" class="ctrl-btn primary" onclick="sendControl('start')">开始</button>
+                            <button class="ctrl-btn" onclick="sendControl('pause')" data-i18n="btn_pause">暂停</button>
+                            <button class="ctrl-btn danger" onclick="sendControl('stop')" data-i18n="btn_stop">停止</button>
+                        </div>
+                        <div id="resistance-box" class="dial-box">
+                            <div class="dial-label" data-i18n="resistance_control">阻力调节</div>
+                            <div class="dial-value"><span id="resist-display">1</span></div>
+                            <input id="resistance-dial" class="dial-range" type="range" min="1" max="24" step="1" value="1" disabled>
+                            <div class="dial-scale">
+                                <span>1</span>
+                                <span>24</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
             <div id="tab-config" class="tab-content">
                 <div class="cfg-box">
+                    <!--
                     <label>输入源设置 (自动协调模式)</label>
                     <select disabled>
                         <option value="auto">混合模式 (优先单车)</option>
                     </select>
 
                     <hr style="border:0; border-top:1px solid #444; margin: 20px 0;">
+                    -->
 
-                    <label>🚴 单车映射目标</label>
+                    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin:10px 0;">
+                        <span data-i18n="language_label" style="flex:1; min-width:0; white-space:nowrap;">语言（Language）</span>
+                        <select id="lang-select" onchange="setLocale(this.value)" style="flex:0 0 120px; width:120px; background:#111; color:#fff; border:1px solid #444; border-radius:6px; padding:6px 8px;">
+                            <option value="zh" data-i18n="language_zh">中文</option>
+                            <option value="en" data-i18n="language_en">English</option>
+                        </select>
+                    </div>
+                    <hr style="border:0; border-top:1px solid #444; margin: 20px 0;">
+
+                    <label data-i18n="ftms_title">FTMS 服务</label>
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin:10px 0;">
+                        <span id="ftms-status" style="color:#888;">--</span>
+                        <button id="ftms-toggle" class="ctrl-btn" style="padding:8px 12px;" onclick="toggleFTMS()">--</button>
+                    </div>
+                    <hr style="border:0; border-top:1px solid #444; margin: 20px 0;">
+
+                    <label data-i18n="bike_target_label">🚴 单车映射目标</label>
                     <select id="bike-target" onchange="sendBikeConfig()">
-                        <option value="disabled">-- 禁用映射 --</option>
-                        <optgroup label="模拟摇杆 (方案A)">
-                            <option value="ly_inv">左摇杆 - 上推 (前进)</option>
-                            <option value="ly">左摇杆 - 下推</option>
-                            <option value="lx_inv">左摇杆 - 左推</option>
-                            <option value="lx">左摇杆 - 右推</option>
-                            <option value="ry_inv">右摇杆 - 上推 (油门)</option>
-                            <option value="ry">右摇杆 - 下推</option>
+                        <option value="disabled" data-i18n="opt_disabled">-- 禁用映射 --</option>
+                        <optgroup label="模拟摇杆" data-i18n-label="opt_stick_group">
+                            <option value="ly_inv" data-i18n="opt_ly_inv">左摇杆 - 上推 (前进)</option>
+                            <option value="ly" data-i18n="opt_ly">左摇杆 - 下推</option>
+                            <option value="lx_inv" data-i18n="opt_lx_inv">左摇杆 - 左推</option>
+                            <option value="lx" data-i18n="opt_lx">左摇杆 - 右推</option>
+                            <option value="ry_inv" data-i18n="opt_ry_inv">右摇杆 - 上推 (油门)</option>
+                            <option value="ry" data-i18n="opt_ry">右摇杆 - 下推</option>
                         </optgroup>
-                        <optgroup label="线性扳机 (方案A)">
-                            <option value="lt">左扳机 (LT)</option>
-                            <option value="rt">右扳机 (RT)</option>
+                        <optgroup label="线性扳机" data-i18n-label="opt_trigger_group">
+                            <option value="lt" data-i18n="opt_lt">左扳机 (LT)</option>
+                            <option value="rt" data-i18n="opt_rt">右扳机 (RT)</option>
                         </optgroup>
-                        <optgroup label="数字按钮 (方案B)">
-                            <option value="btn_a">按键 A</option>
-                            <option value="btn_b">按键 B</option>
-                            <option value="btn_x">按键 X</option>
-                            <option value="btn_y">按键 Y</option>
-                            <option value="btn_lb">左肩键 (LB)</option>
-                            <option value="btn_rb">右肩键 (RB)</option>
-                            <option value="btn_start">START</option>
-                            <option value="btn_select">SELECT</option>
+                        <optgroup label="数字按钮" data-i18n-label="opt_button_group">
+                            <option value="btn_a" data-i18n="opt_btn_a">按键 A</option>
+                            <option value="btn_b" data-i18n="opt_btn_b">按键 B</option>
+                            <option value="btn_x" data-i18n="opt_btn_x">按键 X</option>
+                            <option value="btn_y" data-i18n="opt_btn_y">按键 Y</option>
+                            <option value="btn_lb" data-i18n="opt_btn_lb">左肩键 (LB)</option>
+                            <option value="btn_rb" data-i18n="opt_btn_rb">右肩键 (RB)</option>
+                            <option value="btn_start" data-i18n="opt_btn_start">START</option>
+                            <option value="btn_select" data-i18n="opt_btn_select">SELECT</option>
                         </optgroup>
                     </select>
 
                     <div style="margin-top: 20px; display: flex; justify-content: space-between;">
-                        <label>最大 RPM (满量程)</label>
+                        <label data-i18n="bike_max_rpm_label">最大 RPM (满量程)</label>
                         <span id="max-rpm-display" style="color:var(--primary-accent)">90</span>
                     </div>
                     <input type="range" id="bike-max-rpm" min="30" max="160" value="90" step="5" 
@@ -242,16 +120,35 @@
                         onchange="sendBikeConfig()">
                 </div>
             </div>
+            <div id="tab-history" class="tab-content">
+                <div class="history-wrap">
+                    <div class="history-header">
+                        <div class="history-title" data-i18n="history_title">历史记录</div>
+                        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;">
+                            <input id="history-from" type="date" style="background:#111; color:#eee; border:1px solid #444; border-radius:6px; padding:6px 8px;">
+                            <input id="history-to" type="date" style="background:#111; color:#eee; border:1px solid #444; border-radius:6px; padding:6px 8px;">
+                            <button class="ctrl-btn" style="padding:8px 12px;" onclick="applyHistoryFilter()" data-i18n="history_filter">筛选</button>
+                            <button class="ctrl-btn" style="padding:8px 12px;" onclick="clearHistoryFilter()" data-i18n="history_clear">清空</button>
+                            <button class="ctrl-btn" style="padding:8px 12px;" onclick="refreshHistory()" data-i18n="history_refresh">刷新</button>
+                            <button class="ctrl-btn" style="padding:8px 12px;" onclick="exportHistoryCSV()" data-i18n="history_export">导出 CSV</button>
+                        </div>
+                    </div>
+                    <div id="history-list" class="history-list">
+                        <div class="history-empty" data-i18n="history_empty">暂无记录</div>
+                    </div>
+                </div>
+            </div>
         </main>
         <nav>
-            <div class="nav-btn active" onclick="switchTab('bike', this)">🚴 单车</div>
-            <div class="nav-btn" onclick="enterGamepad()">🎮 手柄</div>
-            <div class="nav-btn" onclick="switchTab('config', this)">⚙️ 设置</div>
+            <div class="nav-btn active" onclick="switchTab('bike', this)" data-i18n="tab_bike">🚴 单车</div>
+            <div class="nav-btn" onclick="enterGamepad()" data-i18n="tab_gamepad">🎮 手柄</div>
+            <div class="nav-btn" onclick="switchTab('history', this); refreshHistory()" data-i18n="tab_history">📜 记录</div>
+            <div class="nav-btn" onclick="switchTab('config', this)" data-i18n="tab_settings">⚙️ 设置</div>
         </nav>
     </div>
 
     <div id="landscape-gamepad">
-        <div class="exit-pill" onclick="exitGamepad()">✕ 退出</div>
+        <div class="exit-pill" onclick="exitGamepad()" data-i18n="gamepad_exit">✕ 退出</div>
 
         <div class="trigger tr-l" ontouchstart="trigger(0,255)" ontouchend="trigger(0,128)">LT</div>
         <div class="trigger tr-r" ontouchstart="trigger(1,255)" ontouchend="trigger(1,128)">RT</div>
@@ -288,240 +185,10 @@
         </div>
     </div>
 
-    <script>
-        const ws = new WebSocket((location.protocol==='https:'?'wss:':'ws:') + "//" + location.host + "/ws");
-    
-        // 1. 网页一打开，立刻通过 HTTP 读取配置 (比 WebSocket 更快更直接)
-        window.onload = function() {
-            fetch('/api/config')
-                .then(response => response.json())
-                .then(config => {
-                    console.log("配置已加载:", config);
-                    // 更新下拉菜单
-                    const sel = document.getElementById('bike-target');
-                    if (sel) sel.value = config.target;
-                    
-                    // 更新滑杆
-                    const range = document.getElementById('bike-max-rpm');
-                    if (range) {
-                        range.value = config.max_rpm;
-                        document.getElementById('max-rpm-display').innerText = config.max_rpm;
-                    }
-                })
-                .catch(err => console.error("加载配置失败:", err));
-        };
-
-        ws.onopen = () => { 
-            document.getElementById('ws-status').innerText = "在线"; 
-            document.getElementById('ws-status').style.color = "#00ff88"; 
-        };
-        
-        ws.onclose = () => { 
-            document.getElementById('ws-status').innerText = "离线"; 
-            document.getElementById('ws-status').style.color = "#f44336"; 
-        };
-
-        // 新增：处理后端发来的数据
-        ws.onmessage = (event) => {
-        try {
-            const msg = JSON.parse(event.data);
-            if (msg.type === 'bike_data') {
-                const rpmEl = document.getElementById('rpm-val');
-                rpmEl.innerText = msg.rpm;
-                // 如果转速为 0，颜色变暗
-                rpmEl.style.color = msg.rpm > 0 ? "var(--primary-accent)" : "#555";
-            } else if (msg.type === 'bike_status') {
-                const statusEl = document.getElementById('bt-status');
-                if (msg.active) {
-                    statusEl.innerText = "骑行中";
-                    statusEl.style.color = "var(--primary-accent)";
-                    statusEl.style.background = "rgba(0, 255, 136, 0.1)";
-                } else {
-                    statusEl.innerText = "已停止";
-                    statusEl.style.color = "#888";
-                    statusEl.style.background = "none";
-                    // 状态变 Idle 时，前端也强制将显示值归零
-                    document.getElementById('rpm-val').innerText = "0";
-                }
-            }
-        } catch (e) {}
-    };
-
-        // 新增：向后端发送单车配置
-        function sendBikeConfig() {
-            const target = document.getElementById('bike-target').value;
-            const maxRpm = document.getElementById('bike-max-rpm').value;
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                    type: 'bike_config',
-                    target: target,
-                    max_rpm: parseInt(maxRpm)
-                }));
-            }
-        }
-        function btn(id, val) {
-            if(val && navigator.vibrate) navigator.vibrate(15);
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({type:'btn', source:'virtual', id:id, val:val}));
-            }
-        }
-
-        function trigger(lr, val) {
-            if(val && navigator.vibrate) navigator.vibrate(15);
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({type:'trigger', source:'virtual', lr:lr, val:val}));
-            }
-        }
-        
-        function sendSource(val) {
-            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'source', val:val}));
-        }
-
-        // --- 摇杆逻辑 (视觉/数据坐标解耦修复版) ---
-        function initStick(elmId, side) {
-            const zone = document.getElementById(elmId);
-            const knob = zone.querySelector('.stick-knob');
-            const gamepadContainer = document.getElementById('landscape-gamepad');
-
-            let lastSend = 0;
-
-            function update(dx, dy, force=false) {
-                const now = Date.now();
-                if (!force && now - lastSend < 20) return;
-                lastSend = now;
-
-                // --- 1. 计算最大物理移动半径 ---
-                // zone.width/2 (底座半径) - knob.width/2 (球半径)
-                // 这样当球边缘碰到底座边缘时，圆心移动距离就是 maxDist
-                const maxDist = zone.offsetWidth / 2 - knob.offsetWidth / 2;
-                
-                if (maxDist <= 0) return;
-
-                // --- 2. 视觉层修正 (Visual Layer) ---
-                // 让摇杆球看起来跟随手指
-                let visualX = dx;
-                let visualY = dy;
-
-                if (gamepadContainer.classList.contains('rotated')) {
-                    // 竖屏强转模式下，视觉坐标系旋转了 90度
-                    // 物理右(dx+) -> 视觉上(vy-)
-                    // 物理下(dy+) -> 视觉右(vx+)
-                    visualX = dy;
-                    visualY = -dx;
-                }
-                knob.style.transform = `translate(calc(-50% + ${visualX}px), calc(-50% + ${visualY}px))`;
-
-                // --- 3. 数据层修正 (Data Layer) ---
-                // 核心修正：数据层永远对应物理手势！
-                // 物理向右推 (dx > 0) -> 发送 X > 128
-                // 物理向下推 (dy > 0) -> 发送 Y > 128
-                
-                // 这里不需要检测 rotated！
-                // 因为当用户竖屏玩时，他往“物理右侧”推，就是想让游戏角色往右走
-                // 即使屏幕画面是转过来的，操作直觉依然是基于物理方向的
-                
-                // 唯一需要注意的是，如果用户是横着拿手机（顶部朝左/右）
-                // 那么物理坐标系本身相对于人眼就变了。
-                
-                // 假设用户是把手机横过来拿（Home键在右）：
-                // 物理上(dy-) -> 人眼左 -> Game Left (X-)
-                // 物理右(dx+) -> 人眼上 -> Game Up (Y-)
-                
-                // 让我们根据之前的反馈来修正：
-                // "右摇杆往右，传入了Y轴数据，但应该是X轴"
-                // 这说明之前代码里的 finalX = y 把轴换错了。
-                
-                let gameX = dx;
-                let gameY = dy;
-
-                if (gamepadContainer.classList.contains('rotated')) {
-                    gameX = dy;
-                    gameY = -dx;
-                }
-
-                // 数值归一化 (0-255)
-                // 确保 range 能够达到 0 和 255
-                // 使用 clamp 防止溢出
-                const normalize = (val) => {
-                    let v = ((val / maxDist) + 1) / 2 * 255;
-                    return Math.max(0, Math.min(255, Math.round(v)));
-                };
-
-                const valX = normalize(gameX);
-                const valY = normalize(gameY);
-                
-                if (ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({type: 'axis', source: 'virtual', stick: side, x: valX, y: valY}));
-                }
-            }
-
-            zone.addEventListener('touchstart', e => {
-                e.preventDefault();
-                const rect = zone.getBoundingClientRect();
-                const centerX = rect.left + rect.width / 2;
-                const centerY = rect.top + rect.height / 2;
-                
-                // 重新计算 maxDist，确保准确
-                // 关键修正：必须减去球体半径！否则推不到顶！
-                const maxDist = zone.offsetWidth / 2 - knob.offsetWidth / 2;
-
-                const moveHandler = (em) => {
-                    const tm = em.targetTouches[0];
-                    let dx = tm.clientX - centerX;
-                    let dy = tm.clientY - centerY;
-                    
-                    // 限制在圆形范围内
-                    const dist = Math.sqrt(dx*dx + dy*dy);
-                    if (dist > maxDist) {
-                        const ratio = maxDist / dist;
-                        dx *= ratio; dy *= ratio;
-                    }
-                    
-                    update(dx, dy);
-                };
-                const endHandler = () => {
-                    update(0, 0, true);
-                    zone.removeEventListener('touchmove', moveHandler);
-                    zone.removeEventListener('touchend', endHandler);
-                };
-                zone.addEventListener('touchmove', moveHandler);
-                zone.addEventListener('touchend', endHandler);
-            });
-        }
-        
-        setTimeout(() => {
-            initStick('stick-l', 'left');
-            initStick('stick-r', 'right');
-        }, 500);
-
-        function enterGamepad() {
-            const gp = document.getElementById('landscape-gamepad');
-            const pt = document.getElementById('portrait-layout');
-            gp.style.display = 'block'; pt.style.display = 'none';
-            if(document.documentElement.requestFullscreen) document.documentElement.requestFullscreen();
-            checkRot();
-        }
-        function exitGamepad() {
-            const gp = document.getElementById('landscape-gamepad');
-            const pt = document.getElementById('portrait-layout');
-            gp.style.display = 'none'; pt.style.display = 'flex';
-            gp.classList.remove('rotated');
-            if(document.exitFullscreen) document.exitFullscreen();
-        }
-        function checkRot() {
-            const gp = document.getElementById('landscape-gamepad');
-            // 判断逻辑：只要高大于宽，就加旋转类
-            if(window.innerHeight > window.innerWidth) gp.classList.add('rotated');
-            else gp.classList.remove('rotated');
-        }
-        window.addEventListener('resize', () => { if(document.getElementById('landscape-gamepad').style.display === 'block') checkRot(); });
-        function switchTab(id, el) {
-            document.querySelectorAll('.tab-content').forEach(d => d.classList.remove('active'));
-            document.querySelectorAll('.nav-btn').forEach(n => n.classList.remove('active'));
-            document.getElementById('tab-' + id).classList.add('active');
-            el.classList.add('active');
-        }
-        document.addEventListener('contextmenu', e => e.preventDefault());
-    </script>
+    <script src="/static/i18n.js" defer></script>
+    <script src="/static/history.js" defer></script>
+    <script src="/static/settings.js" defer></script>
+    <script src="/static/app.js" defer></script>
+    <script src="/static/gamepad.js" defer></script>
 </body>
 </html>

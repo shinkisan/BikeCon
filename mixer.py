@@ -7,14 +7,14 @@ import sys
 from pathlib import Path
 
 CONFIG_PATH = Path("/etc/BikeCon/config.json")
-SOCKET_PATH = Path("/var/run/BikeCon/mixer.sock")
+RUN_DIR = Path("/var/run/BikeCon")
+SOCKET_PATH = RUN_DIR / "mixer.sock"
 
-# Fallback if /var/run is not writable
+# Ensure runtime directory exists (managed by systemd RuntimeDirectory)
 try:
-    os.makedirs("/var/run/BikeCon", exist_ok=True)
-except (PermissionError, OSError):
-    SOCKET_PATH = Path("/tmp/BikeCon/mixer.sock")
-    os.makedirs("/tmp/BikeCon", exist_ok=True)
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+except (PermissionError, OSError) as e:
+    raise RuntimeError(f"[Mixer] {RUN_DIR} not writable. Check systemd RuntimeDirectory/permissions.") from e
 
 HID_PATH = Path("/dev/hidg0")
 
@@ -246,11 +246,11 @@ class Mixer:
 
     async def run(self):
         # 确保 Socket 文件不存在
-        if os.path.exists(SOCKET_PATH):
-            try: os.remove(SOCKET_PATH)
+        if SOCKET_PATH.exists():
+            try: SOCKET_PATH.unlink()
             except: pass
             
-        server = await asyncio.start_unix_server(self.handle_client, path=SOCKET_PATH)
+        server = await asyncio.start_unix_server(self.handle_client, path=str(SOCKET_PATH))
         os.chmod(SOCKET_PATH, 0o666)
         print(f"[*] [Mixer] 服务启动: {SOCKET_PATH}")
         

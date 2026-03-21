@@ -54,9 +54,14 @@ echo ""
 echo "Step 3: Stopping bike service..."
 stop_service "BikeCon-bike.service" "BLE Bike Connection Service"
 
-# Step 4: Stop mixer service
+# Step 4: Stop FTMS service
 echo ""
-echo "Step 4: Stopping mixer service..."
+echo "Step 4: Stopping FTMS service..."
+stop_service "BikeCon-ftms.service" "FTMS BLE Server Service"
+
+# Step 5: Stop mixer service
+echo ""
+echo "Step 5: Stopping mixer service..."
 stop_service "BikeCon-mixer.service" "Gamepad Mixer Service"
 
 echo ""
@@ -69,6 +74,8 @@ echo ""
 echo "Final Service Status:"
 echo "--------------------"
 systemctl status BikeCon-mixer.service --no-pager -l | grep -E "(Active|Loaded)" || echo "BikeCon-mixer.service: not loaded"
+echo ""
+systemctl status BikeCon-ftms.service --no-pager -l | grep -E "(Active|Loaded)" || echo "BikeCon-ftms.service: not loaded"
 echo ""
 systemctl status BikeCon-bike.service --no-pager -l | grep -E "(Active|Loaded)" || echo "BikeCon-bike.service: not loaded"
 echo ""

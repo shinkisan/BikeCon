@@ -7,6 +7,7 @@ After=BikeCon-hardware.service network.target
 [Service]
 Type=simple
 User=root
+Group=bikecon
 WorkingDirectory=/opt/BikeCon
 ExecStartPre=/usr/bin/test -e /dev/hidg0
 ExecStart=/opt/BikeCon/venv/bin/python3 mixer.py
