@@ -12,16 +12,15 @@ from evdev import ecodes, InputDevice, list_devices
 from pathlib import Path
 
 # Socket path follows FHS standard
-SOCKET_PATH = "/var/run/BikeCon/mixer.sock"
-WEBAPP_SOCKET = "/var/run/BikeCon/webapp.sock"
+RUN_DIR = Path("/var/run/BikeCon")
+SOCKET_PATH = RUN_DIR / "mixer.sock"
+WEBAPP_SOCKET = RUN_DIR / "webapp.sock"
 
 # Fallback if /var/run is not writable
 try:
-    os.makedirs("/var/run/BikeCon", exist_ok=True)
-except (PermissionError, OSError):
-    SOCKET_PATH = "/tmp/BikeCon/mixer.sock"
-    WEBAPP_SOCKET = "/tmp/BikeCon/webapp.sock"
-    os.makedirs("/tmp/BikeCon", exist_ok=True)
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+except (PermissionError, OSError) as e:
+    raise RuntimeError(f"[JoyCon] {RUN_DIR} not writable. Check systemd RuntimeDirectory/permissions.") from e
 IDLE_TIMEOUT = 600 # 普通手柄 10分钟无操作断开
 IMU_IDLE_TIMEOUT = 2 # IMU 2秒无数据视为手动关闭，强制断开
 BIKE_ACTIVE_FLAG = "/tmp/c2lite_bike_active"

@@ -1,4 +1,6 @@
 {
-	"target": "rt",
-	"max_rpm": 100
+  "target": "rt",
+  "max_rpm": 90,
+  "ftms_layer_enabled": false,
+  "language": "zh"
 }

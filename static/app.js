@@ -5,6 +5,8 @@
         let wsConnected = false;
         let lastWsDisconnectAt = 0;
         let lastWsOpenAt = 0;
+        let wsNextRetryAt = 0;
+        let wsStatusRefreshTimer = null;
 
         function handleWsMessage(event) {
             try {
@@ -68,6 +70,7 @@
                 wsConnected = true;
                 lastWsOpenAt = Date.now();
                 wsRetryMs = 1000;
+                wsNextRetryAt = 0;
                 if (wsReconnectTimer) {
                     clearTimeout(wsReconnectTimer);
                     wsReconnectTimer = null;
@@ -79,17 +82,8 @@
                 wsConnected = false;
                 setConnectedState(false);
                 lastWsDisconnectAt = Date.now();
-                if (btStatusEl) {
-                    btStatusEl.innerText = "正在重连服务器…";
-                    btStatusEl.style.color = "#888";
-                    btStatusEl.style.background = "none";
-                }
-                if (wsReconnectTimer) return;
-                wsReconnectTimer = setTimeout(() => {
-                    wsReconnectTimer = null;
-                    wsRetryMs = Math.min(WS_RETRY_MAX_MS, wsRetryMs * 2);
-                    connectWebSocket();
-                }, wsRetryMs);
+                scheduleWsReconnect();
+                applyUIState();
             };
         }
 
@@ -97,10 +91,17 @@
     
         // 1. 网页一打开，立刻通过 HTTP 读取配置 (比 WebSocket 更快更直接)
         window.onload = function() {
+            if (typeof applyI18n === 'function') applyI18n();
+            if (typeof setDashboardPlaceholders === 'function') setDashboardPlaceholders();
+            if (typeof applyUIState === 'function') applyUIState();
+            if (typeof setFTMSUI === 'function') setFTMSUI(false, t('ftms_unknown'));
             fetch('/api/config')
                 .then(response => response.json())
                 .then(config => {
                     console.log("配置已加载:", config);
+                    if (config && config.language && typeof setLocale === 'function') {
+                        setLocale(config.language, { noPersist: true });
+                    }
                     // 更新下拉菜单
                     const sel = document.getElementById('bike-target');
                     if (sel) sel.value = config.target;
@@ -127,14 +128,14 @@
             const left = joyconBattery.LEFT;
             const right = joyconBattery.RIGHT;
             if (left == null && right == null) {
-                el.innerText = "JoyCon: --";
+                el.innerText = t('joycon_label');
                 el.style.color = "#777";
                 return;
             }
             const parts = [];
             if (left != null) parts.push(`L ${left}%`);
             if (right != null) parts.push(`R ${right}%`);
-            el.innerText = "JoyCon： " + parts.join(" | ");
+            el.innerText = t('joycon_prefix') + " " + parts.join(" | ");
             el.style.color = "#ddd";
         }
 
@@ -142,6 +143,7 @@
         let sessionTimer = null;
         let sessionBase = 0;
         let sessionStartClient = 0;
+        let sessionState = null;
 
         function formatDuration(sec) {
             const s = Math.max(0, parseInt(sec, 10));
@@ -155,11 +157,16 @@
         function renderSessionTime(extraLabel) {
             if (!sessionTimeEl) return;
             const elapsed = sessionBase + Math.floor((Date.now() - sessionStartClient) / 1000);
-            const label = extraLabel ? `本次时长 ${formatDuration(elapsed)} (${extraLabel})` : `本次时长 ${formatDuration(elapsed)}`;
-            sessionTimeEl.innerText = label;
+            const time = formatDuration(elapsed);
+            if (extraLabel) {
+                sessionTimeEl.innerText = t('session_time_paused', { time });
+            } else {
+                sessionTimeEl.innerText = t('session_time', { time });
+            }
         }
 
         function updateSessionState(state, activeDuration) {
+            sessionState = state;
             sessionBase = activeDuration || 0;
             sessionStartClient = Date.now();
             if (sessionTimer) {
@@ -171,11 +178,24 @@
                 sessionTimer = setInterval(() => renderSessionTime(), 1000);
             } else if (state === 'PAUSED') {
                 sessionStartClient = Date.now();
-                renderSessionTime('暂停');
+                renderSessionTime('paused');
             } else {
-                if (sessionTimeEl) sessionTimeEl.innerText = "本次时长 --:--";
+                if (sessionTimeEl) sessionTimeEl.innerText = t('session_time', { time: "--:--" });
             }
         }
+
+        function refreshSessionTimeI18n() {
+            if (!sessionTimeEl) return;
+            if (sessionState === 'ACTIVE') {
+                renderSessionTime();
+            } else if (sessionState === 'PAUSED') {
+                renderSessionTime('paused');
+            } else {
+                sessionTimeEl.innerText = t('session_time', { time: "--:--" });
+            }
+        }
+
+        window.refreshSessionTimeI18n = refreshSessionTimeI18n;
 
         function formatDate(ts) {
             const d = new Date(ts * 1000);
@@ -218,40 +238,51 @@
             if (speedEl) speedEl.innerText = "--";
             if (resistValEl) resistValEl.innerText = "--";
             if (resistDisplay) resistDisplay.innerText = "--";
-            if (sessionTimeEl) sessionTimeEl.innerText = "本次时长 --:--";
+            if (sessionTimeEl) sessionTimeEl.innerText = t('session_time', { time: "--:--" });
         }
 
         function getWsReconnectRemainingSec() {
-            if (!lastWsDisconnectAt) return Math.ceil(wsRetryMs / 1000);
-            const elapsed = Date.now() - lastWsDisconnectAt;
-            const remainMs = Math.max(0, wsRetryMs - elapsed);
+            if (!wsNextRetryAt) return Math.max(1, Math.ceil(wsRetryMs / 1000));
+            const remainMs = Math.max(0, wsNextRetryAt - Date.now());
             return Math.max(1, Math.ceil(remainMs / 1000));
+        }
+
+        function scheduleWsReconnect() {
+            if (wsReconnectTimer) return;
+            const retryDelay = wsRetryMs;
+            wsNextRetryAt = Date.now() + retryDelay;
+            wsReconnectTimer = setTimeout(() => {
+                wsReconnectTimer = null;
+                wsNextRetryAt = 0;
+                connectWebSocket();
+                wsRetryMs = Math.min(WS_RETRY_MAX_MS, retryDelay * 2);
+            }, retryDelay);
         }
 
         function getStatusLabel() {
             if (!wsConnected) {
-                return `正在重连服务器，${getWsReconnectRemainingSec()}秒后重试…`;
+                return t('status_server_reconnect', { sec: getWsReconnectRemainingSec() });
             }
             if (!bikeConnected) {
                 if (!hasBikeEverConnected) {
-                    return "获取单车状态中…";
+                    return t('status_sync');
                 }
                 if (!lastBikeMsgAt && lastWsOpenAt && (Date.now() - lastWsOpenAt < BIKE_SYNC_GRACE_MS)) {
-                    return "获取单车状态中…";
+                    return t('status_sync');
                 }
-                return "单车离线，重连中……";
+                return t('status_bike_offline');
             }
             const name = lastStatusName;
-            if (name === 'ACTIVE') return "骑行中";
-            if (name === 'READY') return "待机";
-            if (name === 'TRANSITION') return "准备";
-            if (name === 'PAUSED') return "暂停中";
-            if (name === 'UNKNOWN') return "未知";
-            if (lastStatusCode === 3) return "骑行中";
-            if (lastStatusCode === 1) return "待机";
-            if (lastStatusCode === 2) return "准备";
-            if (lastStatusCode === 4) return "暂停中";
-            return bikeActive ? "骑行中" : "待机";
+            if (name === 'ACTIVE') return t('status_active');
+            if (name === 'READY') return t('status_ready');
+            if (name === 'TRANSITION') return t('status_transition');
+            if (name === 'PAUSED') return t('status_paused');
+            if (name === 'UNKNOWN') return t('status_unknown');
+            if (lastStatusCode === 3) return t('status_active');
+            if (lastStatusCode === 1) return t('status_ready');
+            if (lastStatusCode === 2) return t('status_transition');
+            if (lastStatusCode === 4) return t('status_paused');
+            return bikeActive ? t('status_active') : t('status_ready');
         }
 
         function isTransitionState() {
@@ -271,7 +302,7 @@
             } else
             if (startBtn) {
                 const isPaused = (lastStatusName === 'PAUSED') || (lastStatusCode === 4);
-                startBtn.innerText = isPaused ? "恢复" : "开始";
+                startBtn.innerText = isPaused ? t('btn_resume') : t('btn_start');
             }
             if (!bikeConnected) {
                 if (btStatusEl) {
@@ -330,6 +361,14 @@
         }
 
         setConnectedState(false);
+
+        if (!wsStatusRefreshTimer) {
+            wsStatusRefreshTimer = setInterval(() => {
+                if (!wsConnected) {
+                    applyUIState();
+                }
+            }, 1000);
+        }
 
         function updateDialBackground(el) {
             if (!el) return;
@@ -419,6 +458,12 @@
             if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'source', val:val}));
         }
 
+        function sendAxis(stick, x, y) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({type:'axis', source:'virtual', stick: stick, x: x, y: y}));
+            }
+        }
+
         // --- 摇杆逻辑 (视觉/数据坐标解耦修复版) ---
         function switchTab(id, el) {
             document.querySelectorAll('.tab-content').forEach(d => d.classList.remove('active'));
@@ -427,4 +472,10 @@
             el.classList.add('active');
         }
         document.addEventListener('contextmenu', e => e.preventDefault());
+
+        window.sendAxis = sendAxis;
+        window.sendBikeConfig = sendBikeConfig;
+        window.btn = btn;
+        window.trigger = trigger;
+        window.switchTab = switchTab;
     

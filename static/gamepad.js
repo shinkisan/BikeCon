@@ -70,8 +70,8 @@
                 const valX = normalize(gameX);
                 const valY = normalize(gameY);
                 
-                if (ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({type: 'axis', source: 'virtual', stick: side, x: valX, y: valY}));
+                if (typeof sendAxis === 'function') {
+                    sendAxis(side, valX, valY);
                 }
             }
 
@@ -130,7 +130,7 @@
         function exitGamepad() {
             const gp = document.getElementById('landscape-gamepad');
             const pt = document.getElementById('portrait-layout');
-            gp.style.display = 'none'; pt.style.display = 'flex';
+            gp.style.display = 'none'; pt.style.display = '';
             gp.classList.remove('rotated');
             if(document.exitFullscreen) document.exitFullscreen();
         }
@@ -141,3 +141,5 @@
             else gp.classList.remove('rotated');
         }
         window.addEventListener('resize', () => { if(document.getElementById('landscape-gamepad').style.display === 'block') checkRot(); });
+        window.enterGamepad = enterGamepad;
+        window.exitGamepad = exitGamepad;

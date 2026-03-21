@@ -5,6 +5,9 @@
             --active-bg: #e0e0e0;
             --active-border: #fff;
             --primary-accent: #00ff88;
+            --status-bar-h: clamp(50px, 7.5dvh, 82px);
+            --tab-bar-h: clamp(56px, 8.5dvh, 90px);
+            --safe-bottom: env(safe-area-inset-bottom);
             
             --unit: 1vmin; 
             --stick-size: 30vmin; /* 保持你调整的大小 */
@@ -25,13 +28,60 @@
         }
 
         /* 竖屏 UI */
-        #portrait-layout { display: flex; flex-direction: column; height: 100%; width: 100%; }
-        header { height: 50px; background: #222; border-bottom: 1px solid #333; display: flex; align-items: center; justify-content: space-between; padding: 0 20px;}
-        main { flex: 1; }
-        .tab-content { display: none; height: 100%; flex-direction: column; align-items: center; justify-content: center; }
+        #portrait-layout {
+            display: grid;
+            grid-template-rows: var(--status-bar-h) minmax(0, 1fr) var(--tab-bar-h);
+            height: 100%;
+            width: 100%;
+        }
+        header {
+            height: var(--status-bar-h);
+            min-height: var(--status-bar-h);
+            max-height: var(--status-bar-h);
+            background: #222;
+            border-bottom: 1px solid #333;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: env(safe-area-inset-top) 20px 0 20px;
+        }
+        main {
+            min-height: 0;
+            overflow: hidden;
+        }
+        .tab-content {
+            display: none;
+            height: 100%;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            padding: 12px 0 16px;
+        }
         .tab-content.active { display: flex; }
-        nav { height: 60px; background: #222; border-top: 1px solid #333; display: flex; }
-        .nav-btn { flex: 1; display: flex; align-items: center; justify-content: center; color: #888; font-size: 0.9rem;}
+        nav {
+            height: calc(var(--tab-bar-h) + var(--safe-bottom));
+            min-height: calc(var(--tab-bar-h) + var(--safe-bottom));
+            max-height: calc(var(--tab-bar-h) + var(--safe-bottom));
+            background: #222;
+            border-top: 1px solid #333;
+            display: flex;
+            padding-bottom: var(--safe-bottom);
+            align-items: flex-start;
+        }
+        .nav-btn {
+            flex: 1;
+            height: var(--tab-bar-h);
+            min-height: var(--tab-bar-h);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #888;
+            font-size: 0.9rem;
+            line-height: 1;
+            text-align: center;
+        }
         .nav-btn.active { color: var(--primary-accent); }
 
         /* 横屏手柄 UI */
@@ -236,13 +286,13 @@
             background: #666; border-color: #333; box-shadow: none;
         }
         .dial-scale { display: flex; justify-content: space-between; font-size: 0.7rem; color: #666; }
-        .cfg-box { width: 90%; max-width: 400px; padding: 20px; background: #222; border-radius: 10px; }
+        .cfg-box { width: 94%; max-width: 520px; padding: 20px; background: #222; border-radius: 10px; }
         select { width: 100%; padding: 10px; background: #111; color: #fff; border: 1px solid #444; margin-top: 10px; border-radius: 5px; }
 
         .history-wrap { width: 92%; max-width: 640px; height: 100%; display: flex; flex-direction: column; gap: 12px; padding-top: 10px; }
         .history-header { width: 100%; display: flex; align-items: center; justify-content: space-between; }
         .history-title { font-size: 1rem; letter-spacing: 0.08em; color: #9aa0a6; }
-        .history-list { width: 100%; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; padding-bottom: 80px; }
+        .history-list { width: 100%; display: flex; flex-direction: column; gap: 10px; overflow-y: visible; padding-bottom: 12px; }
         .history-card {
             background: #1e1e1e; border: 1px solid #333; border-radius: 12px;
             padding: 12px 14px; box-shadow: 0 6px 16px rgba(0,0,0,0.35);

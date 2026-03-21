@@ -7,6 +7,7 @@ After=BikeCon-mixer.service bluetooth.target
 [Service]
 Type=simple
 User=root
+Group=bikecon
 WorkingDirectory=/opt/BikeCon
 ExecStart=/opt/BikeCon/venv/bin/python3 bike_service.py
 Restart=always

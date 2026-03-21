@@ -15,8 +15,8 @@ echo "BikeCon Installation Script"
 echo "=========================================="
 echo ""
 
-# Step 0: Check if running as root
-echo "[Step 0] Checking root privileges..."
+# Step 1: Check if running as root
+echo "[Step 1] Checking root privileges..."
 if [[ $EUID -ne 0 ]]; then
    echo -e "${RED}ERROR: This script must be run as root${NC}"
    echo "Use: sudo ./install.sh"
@@ -25,8 +25,8 @@ fi
 echo -e "${GREEN}✓ Running as root${NC}"
 echo ""
 
-# Step 0.1: Check identity.json early
-echo "[Step 0.1] Checking identity configuration..."
+# Step 2: Check identity.json early
+echo "[Step 2] Checking identity configuration..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ ! -f "$SCRIPT_DIR/identity.json" ]]; then
     echo -e "${RED}ERROR: identity.json not found!${NC}"
@@ -62,8 +62,8 @@ fi
 echo -e "${GREEN}✓ identity.json found${NC}"
 echo ""
 
-# Step 1: Check USB Gadget configuration
-echo "[Step 1] Checking USB Gadget configuration..."
+# Step 3: Check USB Gadget configuration
+echo "[Step 3] Checking USB Gadget configuration..."
 if grep -q "dtoverlay=dwc2" /boot/firmware/config.txt; then
     if grep -q "dtoverlay=dwc2,dr_mode=peripheral" /boot/firmware/config.txt; then
         echo -e "${GREEN}✓ USB Gadget is properly configured (dr_mode=peripheral)${NC}"
@@ -96,17 +96,18 @@ else
 fi
 echo ""
 
-# Step 2: Create directory structure
-echo "[Step 2] Creating directory structure..."
+# Step 4: Create directory structure
+echo "[Step 4] Creating directory structure..."
 mkdir -p /opt/BikeCon
 mkdir -p /etc/BikeCon
 mkdir -p /var/log/BikeCon
 mkdir -p /var/run/BikeCon
+mkdir -p /var/lib/BikeCon
 echo -e "${GREEN}✓ Directories created${NC}"
 echo ""
 
-# Step 2.1: Copy usb_gamepad.sh
-echo "[Step 2.1] Installing usb_gamepad.sh..."
+# Step 5: Copy usb_gamepad.sh
+echo "[Step 5] Installing usb_gamepad.sh..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "$SCRIPT_DIR/usb_gamepad.sh" ]]; then
     cp "$SCRIPT_DIR/usb_gamepad.sh" /usr/local/bin/usb_gamepad.sh
@@ -118,8 +119,8 @@ else
 fi
 echo ""
 
-# Step 3: Copy application code
-echo "[Step 3] Copying application code to /opt/BikeCon..."
+# Step 6: Copy application code
+echo "[Step 6] Copying application code to /opt/BikeCon..."
 for pyfile in "$SCRIPT_DIR"/*.py; do
     filename=$(basename "$pyfile")
     # Skip identity_gen.py as it's only for credential extraction, not deployment
@@ -135,8 +136,8 @@ fi
 echo -e "${GREEN}✓ Application code copied${NC}"
 echo ""
 
-# Step 4: Create virtual environment and install dependencies
-echo "[Step 4] Setting up Python virtual environment..."
+# Step 7: Create virtual environment and install dependencies
+echo "[Step 7] Setting up Python virtual environment..."
 cd /opt/BikeCon
 
 # Check if venv already exists
@@ -161,8 +162,8 @@ fi
 deactivate
 echo ""
 
-# Step 5: Copy config.json
-echo "[Step 5] Installing configuration template..."
+# Step 8: Copy config.json
+echo "[Step 8] Installing configuration template..."
 if [[ -f "$SCRIPT_DIR/config.json" ]]; then
     cp "$SCRIPT_DIR/config.json" /etc/BikeCon/config.json
     echo -e "${GREEN}✓ config.json copied to /etc/BikeCon/${NC}"
@@ -171,34 +172,47 @@ else
 fi
 echo ""
 
-# Step 5.1: Install identity.json
-echo "[Step 5.1] Installing identity configuration..."
+# Step 9: Install identity.json
+echo "[Step 9] Installing identity configuration..."
 cp "$SCRIPT_DIR/identity.json" /etc/BikeCon/identity.json
 chmod 755 /etc/BikeCon/identity.json
 echo -e "${GREEN}✓ identity.json copied to /etc/BikeCon/${NC}"
 echo ""
 
-# Step 6: Set file permissions
-echo "[Step 6] Setting file permissions..."
+# Step 10: Set file permissions
+echo "[Step 10] Setting file permissions..."
+if ! id -u bikecon >/dev/null 2>&1; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin bikecon
+    echo -e "${GREEN}✓ user bikecon created${NC}"
+fi
 chown -R root:root /opt/BikeCon
 chmod 755 /opt/BikeCon
 chmod 755 /opt/BikeCon/*.py 2>/dev/null || true
 
 chown -R root:root /etc/BikeCon
-chmod 755 /etc/BikeCon
+chown root:bikecon /etc/BikeCon
+chmod 775 /etc/BikeCon
+if [[ -f /etc/BikeCon/config.json ]]; then
+    chown bikecon:bikecon /etc/BikeCon/config.json
+    chmod 640 /etc/BikeCon/config.json
+fi
 
 chown -R root:root /var/log/BikeCon
 chmod 755 /var/log/BikeCon
 
-chown -R root:root /var/run/BikeCon
-chmod 755 /var/run/BikeCon
+# Runtime dir should be group-writable for both root services and bikecon web service
+chown -R root:bikecon /var/run/BikeCon
+chmod 775 /var/run/BikeCon
+
+chown -R bikecon:bikecon /var/lib/BikeCon
+chmod 775 /var/lib/BikeCon
 
 chmod +x /usr/local/bin/usb_gamepad.sh
 echo -e "${GREEN}✓ Permissions set${NC}"
 echo ""
 
-# Step 7: Install systemd service files
-echo "[Step 7] Installing systemd service files..."
+# Step 11: Install systemd service files
+echo "[Step 11] Installing systemd service files..."
 if [[ -d "$SCRIPT_DIR/systemd" ]]; then
     if cp "$SCRIPT_DIR/systemd"/BikeCon-*.service /etc/systemd/system/; then
         echo -e "${GREEN}✓ Service files copied${NC}"
@@ -209,9 +223,21 @@ if [[ -d "$SCRIPT_DIR/systemd" ]]; then
 else
     echo -e "${RED}WARNING: systemd directory not found at $SCRIPT_DIR/systemd${NC}"
 fi
+echo ""
 
-# Step 8: Reload systemd daemon
-echo "[Step 8] Reloading systemd daemon..."
+# Step 12: Install tmpfiles rule for runtime directory
+echo "[Step 12] Installing tmpfiles rule..."
+if [[ -f "$SCRIPT_DIR/systemd/bikecon.conf" ]]; then
+    cp "$SCRIPT_DIR/systemd/bikecon.conf" /etc/tmpfiles.d/bikecon.conf
+    systemd-tmpfiles --create /etc/tmpfiles.d/bikecon.conf
+    echo -e "${GREEN}✓ tmpfiles rule installed${NC}"
+else
+    echo -e "${YELLOW}⚠ tmpfiles rule not found at $SCRIPT_DIR/systemd/bikecon.conf${NC}"
+fi
+echo ""
+
+# Step 13: Reload systemd daemon
+echo "[Step 13] Reloading systemd daemon..."
 systemctl daemon-reload
 systemctl enable BikeCon-hardware.service 2>/dev/null || true
 systemctl enable BikeCon-mixer.service 2>/dev/null || true
@@ -221,6 +247,15 @@ systemctl enable BikeCon-web.service 2>/dev/null || true
 systemctl enable BikeCon-ftms.service 2>/dev/null || true
 echo -e "${GREEN}✓ Systemd services registered and enabled${NC}"
 echo ""
+
+# Post-install silent fallback verification (only report on failure)
+if ! sudo -u bikecon bash -lc 'echo test > /etc/BikeCon/.perm_test && rm -f /etc/BikeCon/.perm_test'; then
+    echo -e "${RED}ERROR: bikecon cannot write /etc/BikeCon${NC}"
+    echo "Please check directory permissions:"
+    echo "  chown root:bikecon /etc/BikeCon"
+    echo "  chmod 775 /etc/BikeCon"
+    exit 1
+fi
 
 echo "=========================================="
 echo -e "${GREEN}Installation complete!${NC}"
@@ -238,7 +273,7 @@ echo "   sudo systemctl start BikeCon-web.service"
 echo "   sudo systemctl start BikeCon-joycon.service"
 echo "   sudo systemctl start BikeCon-ftms.service"
 echo ""
-echo "4. View logs:"
+echo "3. View logs:"
 echo "   journalctl -u BikeCon-bike.service -f"
 echo "   Bike Raw Data Logs: tail -f /dev/shm/BikeCon/bike_raw_data.log"
 echo ""
