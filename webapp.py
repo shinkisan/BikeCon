@@ -6,12 +6,12 @@ import time
 from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import Set
+from copy import deepcopy
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-import subprocess
 from pathlib import Path
 
 # 配置路径
@@ -22,16 +22,23 @@ DB_FILE = STATE_DIR / "sessions.db"
 SESSION_STATE_FILE = STATE_DIR / "session_state.json"
 
 # Socket 路径
-WEBAPP_SOCKET = "/var/run/BikeCon/webapp.sock"  # 接收来自 bike_service 的数据
-MIXER_SOCKET = "/var/run/BikeCon/mixer.sock"    # 发送指令给 mixer (控制源切换等)
-CONTROL_SOCKET = "/var/run/BikeCon/control.sock"  # 发送控制指令给 bike_service
+RUN_DIR = Path("/var/run/BikeCon")
+WEBAPP_SOCKET = RUN_DIR / "webapp.sock"  # 接收来自 bike_service 的数据
+MIXER_SOCKET = RUN_DIR / "mixer.sock"    # 发送指令给 mixer (控制源切换等)
+CONTROL_SOCKET = RUN_DIR / "control.sock"  # 发送控制指令给 bike_service
 
 # 确保运行时目录存在
-os.makedirs("/var/run/BikeCon", exist_ok=True)
-os.makedirs("/var/lib/BikeCon", exist_ok=True)
+RUN_DIR.mkdir(parents=True, exist_ok=True)
+STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- 全局状态 ---
 active_websockets: Set[WebSocket] = set()
+WEBAPP_DEBUG = os.getenv("BIKECON_WEBAPP_DEBUG", "0") == "1"
+
+
+def _debug_log(msg: str):
+    if WEBAPP_DEBUG:
+        print(msg)
 
 class SessionStore:
     def __init__(self, db_path: Path):
@@ -344,15 +351,15 @@ class SessionTracker:
 # --- 1. Session Store/Tracker ---
 session_store = SessionStore(DB_FILE)
 session_tracker = SessionTracker(session_store, SESSION_STATE_FILE)
+last_bike_link = None
+last_bike_status = None
 
 # --- 2. 后台监听任务：接收单车数据并广播 ---
 async def socket_listener():
     """监听来自 bike_service.py 的长连接数据流"""
-    # 清理旧的 Socket 文件
-    if os.path.exists(WEBAPP_SOCKET):
-        os.remove(WEBAPP_SOCKET)
-
     async def handle_client(reader, writer):
+        peer = writer.get_extra_info("peername")
+        _debug_log(f"[WebApp] bike_service unix client connected: peer={peer}")
         try:
             while True:
                 # 按行读取，匹配 bike_service 发出的 \n
@@ -368,6 +375,9 @@ async def socket_listener():
                     msg = json.loads(data_str)
                     msg_type = msg.get("type")
                     if msg_type == "bike_status":
+                        global last_bike_status
+                        last_bike_status = msg
+                        _debug_log(f"[WebApp] RX bike_status: {msg}")
                         changed = session_tracker.on_status(msg.get("status_name"))
                         if changed:
                             extra_payloads.append(session_tracker.session_state_payload())
@@ -375,33 +385,58 @@ async def socket_listener():
                         session_tracker.on_data(msg)
                         if session_tracker.session:
                             extra_payloads.append(session_tracker.session_state_payload())
+                    elif msg_type == "bike_link":
+                        global last_bike_link
+                        last_bike_link = msg
+                        _debug_log(f"[WebApp] RX bike_link: connected={msg.get('connected')}")
                 except Exception:
                     pass
 
                 # 广播给所有连接的浏览器
                 try:
                     if active_websockets:
+                        try:
+                            msg_type = json.loads(data_str).get("type")
+                        except Exception:
+                            msg_type = None
+                        if msg_type in ("bike_link", "bike_status"):
+                            _debug_log(f"[WebApp] TX {msg_type} -> ws_clients={len(active_websockets)}")
                         tasks = [ws.send_text(data_str) for ws in active_websockets]
                         for payload in extra_payloads:
+                            _debug_log(f"[WebApp] TX extra session_state -> ws_clients={len(active_websockets)} payload={payload}")
                             tasks.extend([ws.send_text(json.dumps(payload)) for ws in active_websockets])
                         await asyncio.gather(*tasks, return_exceptions=True)
                 except Exception:
                     pass
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[WebApp] socket_listener client loop error: {e}")
         finally:
+            _debug_log(f"[WebApp] bike_service unix client disconnected: peer={peer}")
             writer.close()
             await writer.wait_closed()
 
-    # 启动 Unix Socket 服务
-    server = await asyncio.start_unix_server(handle_client, path=WEBAPP_SOCKET)
-    # 修改权限，确保 bike_service (root/user) 能写入
-    os.chmod(WEBAPP_SOCKET, 0o666)
-    
-    print(f"[WebApp] 监听服务已启动: {WEBAPP_SOCKET}")
-    
-    async with server:
-        await server.serve_forever()
+    while True:
+        server = None
+        try:
+            if WEBAPP_SOCKET.exists():
+                WEBAPP_SOCKET.unlink()
+            server = await asyncio.start_unix_server(handle_client, path=str(WEBAPP_SOCKET))
+            os.chmod(WEBAPP_SOCKET, 0o666)
+            print(f"[WebApp] 监听服务已启动: {WEBAPP_SOCKET}")
+            async with server:
+                await server.serve_forever()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[WebApp] 监听服务异常: {e}, 2秒后重试")
+            await asyncio.sleep(2)
+        finally:
+            if server is not None:
+                server.close()
+                try:
+                    await asyncio.wait_for(server.wait_closed(), timeout=1.0)
+                except Exception:
+                    pass
 
 # --- 2. 异步发送指令给 Mixer (长连接客户端) ---
 class MixerClient:
@@ -452,11 +487,74 @@ async def lifespan(app: FastAPI):
     yield
     # 退出清理
     task.cancel()
+    try:
+        await asyncio.wait_for(task, timeout=1.5)
+    except asyncio.CancelledError:
+        pass
+    except asyncio.TimeoutError:
+        pass
     if os.path.exists(WEBAPP_SOCKET):
         os.remove(WEBAPP_SOCKET)
 
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+
+DEFAULT_CONFIG = {
+    "target": "disabled",
+    "max_rpm": 90,
+    "ftms_layer_enabled": True,
+    "language": "zh",
+}
+
+
+def _sanitize_config_update(payload: dict):
+    if not isinstance(payload, dict):
+        return None, "invalid payload"
+    updates = {}
+    for k, v in payload.items():
+        if k == "target":
+            if not isinstance(v, str):
+                return None, "target must be string"
+            updates[k] = v
+        elif k == "max_rpm":
+            if not isinstance(v, (int, float)):
+                return None, "max_rpm must be number"
+            max_rpm = int(v)
+            if max_rpm < 30 or max_rpm > 160:
+                return None, "max_rpm out of range"
+            updates[k] = max_rpm
+        elif k == "ftms_layer_enabled":
+            if not isinstance(v, bool):
+                return None, "ftms_layer_enabled must be boolean"
+            updates[k] = v
+        elif k == "language":
+            if v not in ("zh", "en"):
+                return None, "language must be zh or en"
+            updates[k] = v
+        else:
+            return None, f"unsupported config key: {k}"
+    return updates, None
+
+
+def _read_config():
+    cfg = deepcopy(DEFAULT_CONFIG)
+    if CONFIG_FILE.exists():
+        try:
+            with CONFIG_FILE.open("r") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                cfg.update(data)
+        except Exception:
+            pass
+    return cfg
+
+
+def _write_config(cfg: dict):
+    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = CONFIG_FILE.with_suffix(".tmp")
+    with tmp_path.open("w") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, CONFIG_FILE)
 
 # --- 4. 路由接口 ---
 
@@ -469,13 +567,20 @@ async def get_index():
 @app.get("/api/config")
 async def get_config():
     """读取配置文件"""
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, 'r') as f:
-                return JSONResponse(content=json.load(f))
-        except:
-            pass
-    return JSONResponse(content={"target": "disabled", "max_rpm": 90})
+    return JSONResponse(content=_read_config())
+
+@app.post("/api/config")
+async def update_config(payload: dict):
+    try:
+        updates, err = _sanitize_config_update(payload)
+        if err:
+            return JSONResponse(status_code=400, content={"error": err})
+        cfg = _read_config()
+        cfg.update(updates)
+        _write_config(cfg)
+        return JSONResponse(content={"ok": True})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 def _date_to_epoch(date_str: str, end_of_day: bool = False):
     dt = datetime.strptime(date_str, "%Y-%m-%d")
@@ -514,16 +619,18 @@ async def get_session(session_id: int):
 @app.get("/api/ftms/status")
 async def ftms_status():
     try:
-        out = subprocess.check_output(["systemctl", "is-active", "BikeCon-ftms.service"], text=True).strip()
-        active = out == "active"
-        return JSONResponse(content={"active": active, "state": out})
+        cfg = _read_config()
+        enabled = cfg.get("ftms_layer_enabled", True)
+        return JSONResponse(content={"enabled": bool(enabled)})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/api/ftms/start")
 async def ftms_start():
     try:
-        subprocess.check_call(["systemctl", "start", "BikeCon-ftms.service"])
+        cfg = _read_config()
+        cfg["ftms_layer_enabled"] = True
+        _write_config(cfg)
         return JSONResponse(content={"ok": True})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -531,7 +638,9 @@ async def ftms_start():
 @app.post("/api/ftms/stop")
 async def ftms_stop():
     try:
-        subprocess.check_call(["systemctl", "stop", "BikeCon-ftms.service"])
+        cfg = _read_config()
+        cfg["ftms_layer_enabled"] = False
+        _write_config(cfg)
         return JSONResponse(content={"ok": True})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -540,8 +649,19 @@ async def ftms_stop():
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     active_websockets.add(websocket)
+    client = getattr(websocket, "client", None)
+    client_desc = f"{getattr(client, 'host', '?')}:{getattr(client, 'port', '?')}"
+    _debug_log(f"[WebApp] WS connected: {client_desc}, active={len(active_websockets)}")
     try:
-        await websocket.send_text(json.dumps(session_tracker.session_state_payload()))
+        state_payload = session_tracker.session_state_payload()
+        await websocket.send_text(json.dumps(state_payload))
+        _debug_log(f"[WebApp] WS init -> session_state {state_payload}")
+        if last_bike_link:
+            await websocket.send_text(json.dumps(last_bike_link))
+            _debug_log(f"[WebApp] WS init -> bike_link {last_bike_link}")
+        if last_bike_status:
+            await websocket.send_text(json.dumps(last_bike_status))
+            _debug_log(f"[WebApp] WS init -> bike_status {last_bike_status}")
     except Exception:
         pass
     try:
@@ -585,8 +705,10 @@ async def websocket_endpoint(websocket: WebSocket):
 
     except WebSocketDisconnect:
         active_websockets.remove(websocket)
-    except Exception:
+        _debug_log(f"[WebApp] WS disconnected: {client_desc}, active={len(active_websockets)}")
+    except Exception as e:
         active_websockets.remove(websocket)
+        print(f"[WebApp] WS error/disconnected: {client_desc}, active={len(active_websockets)}, error={e}")
 
 if __name__ == "__main__":
     try:

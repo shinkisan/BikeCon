@@ -61,6 +61,7 @@ class BikeClient:
     HEARTBEAT_INTERVAL = 1.0
     DATA_TIMEOUT_LIMIT = 20.0
     RECONNECT_INTERVAL_SEC = 5.0
+    RESISTANCE_SEND_INTERVAL = 0.2
 
     def __init__(self, 
                  mac_address: str, 
@@ -85,6 +86,8 @@ class BikeClient:
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._tx_worker_task: Optional[asyncio.Task] = None
         self._tx_queue = asyncio.Queue()
+        self._resistance_pending = None
+        self._resistance_task: Optional[asyncio.Task] = None
         
         # 身份验证
         self.handshake_packets = []
@@ -225,23 +228,33 @@ class BikeClient:
         if hasattr(self, '_current_resistance') and level == self._current_resistance:
             self._log(f"Resistance already {level}, skip")
             return True
-
-        self._resistance_cnt = getattr(self, '_resistance_cnt', 0x06) + 1
-        cnt = self._resistance_cnt
-
-        payload = (
-            bytes.fromhex("3216ef235503")
-            + bytes([0xb0, cnt & 0xFF, (cnt + 9) & 0xFF])
-            + bytes.fromhex("04000002b53130362f36ff08")
-            + bytes([level])
-        )
-
-        packet = self._build_control_packet(payload)
-        await self._smart_write(packet)
-        
-        self._current_resistance = level
-        self._log(f"Set resistance: {level}")
+        self._resistance_pending = int(level)
+        if not self._resistance_task or self._resistance_task.done():
+            self._resistance_task = asyncio.create_task(self._resistance_sender())
         return True
+
+    async def _resistance_sender(self):
+        while self.running and self._resistance_pending is not None:
+            level = self._resistance_pending
+            self._resistance_pending = None
+
+            self._resistance_cnt = getattr(self, '_resistance_cnt', 0x06) + 1
+            cnt = self._resistance_cnt
+
+            payload = (
+                bytes.fromhex("3216ef235503")
+                + bytes([0xb0, cnt & 0xFF, (cnt + 9) & 0xFF])
+                + bytes.fromhex("04000002b53130362f36ff08")
+                + bytes([level])
+            )
+
+            packet = self._build_control_packet(payload)
+            await self._smart_write(packet)
+            self._current_resistance = level
+            self._log(f"Set resistance: {level}")
+
+            # 若这段时间内又有新值，会在下一轮发送
+            await asyncio.sleep(self.RESISTANCE_SEND_INTERVAL)
 
     async def stop_bike(self):
         """发送停止指令"""
@@ -557,6 +570,11 @@ class BikeClient:
         if self._tx_worker_task:
             self._tx_worker_task.cancel()
             self._tx_worker_task = None
+
+        if self._resistance_task:
+            self._resistance_task.cancel()
+            self._resistance_task = None
+        self._resistance_pending = None
             
         # 清空发送队列
         while not self._tx_queue.empty():

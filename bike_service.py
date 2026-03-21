@@ -26,27 +26,23 @@ except Exception as e:
 if not BIKE_MAC:
     raise ValueError("[BikeService] bike_mac not found in identity.json")
 
-PUBSUB_SOCKET = "/var/run/BikeCon/pubsub.sock"
-CONTROL_SOCKET = "/var/run/BikeCon/control.sock"
-MIXER_SOCKET = "/var/run/BikeCon/mixer.sock"
-WEBAPP_SOCKET = "/var/run/BikeCon/webapp.sock"
-BIKE_ACTIVE_FLAG = "/var/run/BikeCon/bike_active"
+RUN_DIR = Path("/var/run/BikeCon")
+PUBSUB_SOCKET = RUN_DIR / "pubsub.sock"
+CONTROL_SOCKET = RUN_DIR / "control.sock"
+MIXER_SOCKET = RUN_DIR / "mixer.sock"
+WEBAPP_SOCKET = RUN_DIR / "webapp.sock"
+BIKE_ACTIVE_FLAG = RUN_DIR / "bike_active"
 
 try:
-    os.makedirs("/var/run/BikeCon", exist_ok=True)
-except PermissionError:
-    PUBSUB_SOCKET = "/tmp/BikeCon/pubsub.sock"
-    CONTROL_SOCKET = "/tmp/BikeCon/control.sock"
-    MIXER_SOCKET = "/tmp/BikeCon/mixer.sock"
-    WEBAPP_SOCKET = "/tmp/BikeCon/webapp.sock"
-    BIKE_ACTIVE_FLAG = "/tmp/BikeCon/bike_active"
-    os.makedirs("/tmp/BikeCon", exist_ok=True)
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+except PermissionError as e:
+    raise RuntimeError(f"[BikeService] {RUN_DIR} not writable. Check systemd RuntimeDirectory/permissions.") from e
 
-RAM_DISK_DIR = "/dev/shm/BikeCon"
-os.makedirs(RAM_DISK_DIR, exist_ok=True)
-RAM_LOG_PATH = os.path.join(RAM_DISK_DIR, "bike_raw_data.log")
-PERSISTENT_LOG_DIR = "/var/log/BikeCon"
-os.makedirs(PERSISTENT_LOG_DIR, exist_ok=True)
+RAM_DISK_DIR = Path("/dev/shm/BikeCon")
+RAM_DISK_DIR.mkdir(parents=True, exist_ok=True)
+RAM_LOG_PATH = RAM_DISK_DIR / "bike_raw_data.log"
+PERSISTENT_LOG_DIR = Path("/var/log/BikeCon")
+PERSISTENT_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_LOG_SIZE = 2 * 1024 * 1024
 BACKUP_COUNT = 1
@@ -54,11 +50,17 @@ BACKUP_COUNT = 1
 logger = logging.getLogger("BikeData")
 logger.setLevel(logging.INFO)
 handler = logging.handlers.RotatingFileHandler(
-    RAM_LOG_PATH, maxBytes=MAX_LOG_SIZE, backupCount=BACKUP_COUNT
+    str(RAM_LOG_PATH), maxBytes=MAX_LOG_SIZE, backupCount=BACKUP_COUNT
 )
 formatter = logging.Formatter('%(asctime)s.%(msecs)03d | %(message)s', datefmt='%H:%M:%S')
 handler.setFormatter(formatter)
 logger.addHandler(handler)
+BIKE_DEBUG = os.getenv("BIKECON_BIKE_DEBUG", "0") == "1"
+
+
+def _debug_log(msg: str):
+    if BIKE_DEBUG:
+        print(msg)
 
 def save_logs_to_disk():
     print("[Log] Saving logs to disk...")
@@ -66,10 +68,10 @@ def save_logs_to_disk():
         for temp_file in glob.glob(f"{RAM_LOG_PATH}*"):
             if os.path.exists(temp_file):
                 filename = os.path.basename(temp_file)
-                dest_path = os.path.join(PERSISTENT_LOG_DIR, filename)
+                dest_path = PERSISTENT_LOG_DIR / filename
                 if os.path.abspath(temp_file) == os.path.abspath(dest_path):
                     continue
-                shutil.copy2(temp_file, dest_path)
+                shutil.copy2(temp_file, str(dest_path))
     except Exception as e:
         print(f"[Log] Save failed: {e}")
 
@@ -81,14 +83,20 @@ class AsyncUnixClient:
         self.path = path
         self.name = name
         self.writer = None
+        self._last_error_log_ts = 0.0
 
     async def ensure_connection(self):
         if self.writer and not self.writer.transport.is_closing():
             return True
         try:
             _, self.writer = await asyncio.open_unix_connection(self.path)
+            _debug_log(f"[BikeService] Unix client connected -> {self.name} ({self.path})")
             return True
-        except:
+        except Exception as e:
+            now = asyncio.get_event_loop().time()
+            if now - self._last_error_log_ts >= 5.0:
+                _debug_log(f"[BikeService] Unix connect failed -> {self.name}: {e}")
+                self._last_error_log_ts = now
             self.writer = None
             return False
 
@@ -97,7 +105,11 @@ class AsyncUnixClient:
             try:
                 self.writer.write(json.dumps(data).encode() + b'\n')
                 await self.writer.drain()
-            except:
+            except Exception as e:
+                now = asyncio.get_event_loop().time()
+                if now - self._last_error_log_ts >= 5.0:
+                    _debug_log(f"[BikeService] Unix send failed -> {self.name}: {e}")
+                    self._last_error_log_ts = now
                 self.writer = None
 
 
@@ -115,11 +127,13 @@ class BikeService:
         self.pubsub_server = None
         self.control_server = None
         self._bike_connected = False
+        self._last_link_state = None
+        self._last_status_msg = None
 
     async def handle_pubsub_connection(self, reader, writer):
         """处理 pubsub 订阅者连接"""
         self.pubsub_writers.add(writer)
-        print(f"[BikeService] PubSub subscriber connected")
+        _debug_log(f"[BikeService] PubSub subscriber connected")
         try:
             while True:
                 data = await reader.read(1)
@@ -134,7 +148,7 @@ class BikeService:
 
     async def handle_control_connection(self, reader, writer):
         """处理控制命令连接 (来自 FTMS 等)"""
-        print(f"[BikeService] Control client connected")
+        _debug_log(f"[BikeService] Control client connected")
         try:
             while True:
                 line = await reader.readline()
@@ -154,7 +168,7 @@ class BikeService:
     async def handle_control_message(self, msg: dict):
         """处理控制消息"""
         cmd_type = msg.get("type")
-        print(f"[BikeService] Control: {cmd_type} - {msg}")
+        _debug_log(f"[BikeService] Control: {cmd_type} - {msg}")
         
         if cmd_type == "set_resistance":
             level = msg.get("level", 10)
@@ -171,6 +185,9 @@ class BikeService:
     def broadcast_to_subscribers(self, data: dict):
         """广播数据到所有订阅者"""
         msg = json.dumps(data).encode() + b'\n'
+        msg_type = data.get("type")
+        if msg_type in ("bike_link", "bike_status"):
+            _debug_log(f"[BikeService] Broadcast {msg_type} to pubsub subscribers={len(self.pubsub_writers)} payload={data}")
         for writer in list(self.pubsub_writers):
             try:
                 writer.write(msg)
@@ -179,37 +196,41 @@ class BikeService:
 
     async def start_servers(self):
         # 启动 pubsub 服务器
-        if os.path.exists(PUBSUB_SOCKET):
-            os.remove(PUBSUB_SOCKET)
+        if PUBSUB_SOCKET.exists():
+            PUBSUB_SOCKET.unlink()
         self.pubsub_server = await asyncio.start_unix_server(
             self.handle_pubsub_connection,
-            path=PUBSUB_SOCKET
+            path=str(PUBSUB_SOCKET)
         )
         os.chmod(PUBSUB_SOCKET, 0o666)
-        print(f"[BikeService] PubSub server: {PUBSUB_SOCKET}")
+        _debug_log(f"[BikeService] PubSub server: {PUBSUB_SOCKET}")
         
         # 启动 control 服务器
-        if os.path.exists(CONTROL_SOCKET):
-            os.remove(CONTROL_SOCKET)
+        if CONTROL_SOCKET.exists():
+            CONTROL_SOCKET.unlink()
         self.control_server = await asyncio.start_unix_server(
             self.handle_control_connection,
-            path=CONTROL_SOCKET
+            path=str(CONTROL_SOCKET)
         )
         os.chmod(CONTROL_SOCKET, 0o666)
-        print(f"[BikeService] Control server: {CONTROL_SOCKET}")
+        _debug_log(f"[BikeService] Control server: {CONTROL_SOCKET}")
 
     def on_data(self, data: BikeData):
         if data.raw_data == "RECONNECTING":
+            _debug_log(f"[BikeService] on_data RECONNECTING received (was_connected={self._bike_connected})")
             if self._bike_connected:
                 self._bike_connected = False
-                link_msg = {"type": "bike_link", "connected": False}
-                self.broadcast_to_subscribers(link_msg)
-                asyncio.create_task(self.webapp.send(link_msg))
-                asyncio.create_task(self.mixer.send(link_msg))
+            link_msg = {"type": "bike_link", "connected": False}
+            self._last_link_state = link_msg
+            self.broadcast_to_subscribers(link_msg)
+            asyncio.create_task(self.webapp.send(link_msg))
+            asyncio.create_task(self.mixer.send(link_msg))
             return
         if not self._bike_connected:
             self._bike_connected = True
             link_msg = {"type": "bike_link", "connected": True}
+            self._last_link_state = link_msg
+            _debug_log("[BikeService] First bike data after offline -> bike_link connected=True")
             self.broadcast_to_subscribers(link_msg)
             asyncio.create_task(self.webapp.send(link_msg))
             asyncio.create_task(self.mixer.send(link_msg))
@@ -247,13 +268,21 @@ class BikeService:
         is_active = (new_status == BikeStatus.ACTIVE)
         print(f"\n[BikeService] Status: {old_status.name} -> {new_status.name}")
 
+        if not self._bike_connected:
+            self._bike_connected = True
+            link_msg = {"type": "bike_link", "connected": True}
+            self._last_link_state = link_msg
+            _debug_log("[BikeService] on_status forced bike_link connected=True (status arrived before data)")
+            self.broadcast_to_subscribers(link_msg)
+            asyncio.create_task(self.webapp.send(link_msg))
+            asyncio.create_task(self.mixer.send(link_msg))
+
         try:
             if is_active:
-                with open(BIKE_ACTIVE_FLAG, 'w') as f:
-                    f.write("1")
+                BIKE_ACTIVE_FLAG.write_text("1")
             else:
-                if os.path.exists(BIKE_ACTIVE_FLAG):
-                    os.remove(BIKE_ACTIVE_FLAG)
+                if BIKE_ACTIVE_FLAG.exists():
+                    BIKE_ACTIVE_FLAG.unlink()
         except Exception as e:
             print(f"Flag Error: {e}")
 
@@ -263,6 +292,7 @@ class BikeService:
             "status_name": new_status.name,
             "status_code": new_status.value
         }
+        self._last_status_msg = status_msg
         
         self.broadcast_to_subscribers(status_msg)
         asyncio.create_task(self.webapp.send(status_msg))

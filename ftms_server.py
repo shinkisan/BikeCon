@@ -3,9 +3,11 @@ import logging
 import signal
 import struct
 import json
+from pathlib import Path
 from typing import Any, Optional
 from dataclasses import dataclass
 from enum import Enum
+import os
 
 from bless import (
     BlessServer,
@@ -39,8 +41,15 @@ DEVICE_INFO_SERVICE = "0000180A-0000-1000-8000-00805f9b34fb"
 CHAR_MANUFACTURER_NAME = "00002A29-0000-1000-8000-00805f9b34fb"
 CHAR_MODEL_NUMBER = "00002A24-0000-1000-8000-00805f9b34fb"
 
-PUBSUB_SOCKET = "/var/run/BikeCon/pubsub.sock"
-CONTROL_SOCKET = "/var/run/BikeCon/control.sock"
+RUN_DIR = Path("/var/run/BikeCon")
+PUBSUB_SOCKET = RUN_DIR / "pubsub.sock"
+CONTROL_SOCKET = RUN_DIR / "control.sock"
+CONFIG_FILE = Path("/etc/BikeCon/config.json")
+
+try:
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
 
 @dataclass
@@ -60,6 +69,8 @@ class FTMSGattServer:
         self.name = name
         self.server: Optional[BlessServer] = None
         self.running = False
+        self.ble_running = False
+        self.enabled = True
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self._current_resistance: float = 10.0
         self._current_status: int = 1
@@ -109,6 +120,8 @@ class FTMSGattServer:
         return result
 
     def on_control_point_write(self, characteristic: BlessGATTCharacteristic, value: Any, **kwargs):
+        if not self.enabled or not self.ble_running:
+            return
         data = bytearray(value) if isinstance(value, bytes) else bytearray(value)
         parsed = self._parse_control_point(data)
         
@@ -235,35 +248,37 @@ class FTMSGattServer:
 
         self._log("FTMS 服务注册完成")
 
-    async def start(self):
+    async def start_background(self):
+        if self.running:
+            return
         self.loop = asyncio.get_running_loop()
-        
         await self._connect_pubsub()
         await self._connect_control()
-        
-        self.server = BlessServer(name=self.name, loop=self.loop)
-        self.server.read_request_func = self.on_read
-        self.server.write_request_func = self.on_control_point_write
-
-        await self._setup_services()
-        
-        await self.server.start()
         self.running = True
-        self._log(f"FTMS Server 已启动: {self.name}")
-        
         asyncio.create_task(self._receive_bike_data())
         asyncio.create_task(self._broadcast_loop())
 
+    async def start_server(self):
+        if self.ble_running:
+            return
+        self.server = BlessServer(name=self.name, loop=self.loop)
+        self.server.read_request_func = self.on_read
+        self.server.write_request_func = self.on_control_point_write
+        await self._setup_services()
+        await self.server.start()
+        self.ble_running = True
+        self._log(f"FTMS Server 已启动: {self.name}")
+
     async def _connect_pubsub(self):
         try:
-            self._pubsub_reader, self._pubsub_writer = await asyncio.open_unix_connection(PUBSUB_SOCKET)
+            self._pubsub_reader, self._pubsub_writer = await asyncio.open_unix_connection(str(PUBSUB_SOCKET))
             self._log(f"Connected to pubsub: {PUBSUB_SOCKET}")
         except Exception as e:
             self._log(f"Failed to connect to pubsub: {e}", "ERROR")
 
     async def _connect_control(self):
         try:
-            _, self._control_writer = await asyncio.open_unix_connection(CONTROL_SOCKET)
+            _, self._control_writer = await asyncio.open_unix_connection(str(CONTROL_SOCKET))
             self._log(f"Connected to control: {CONTROL_SOCKET}")
         except Exception as e:
             self._log(f"Failed to connect to control: {e}", "ERROR")
@@ -306,15 +321,22 @@ class FTMSGattServer:
     async def _broadcast_loop(self):
         while self.running:
             await asyncio.sleep(1.0)
+            if not self.enabled or not self.ble_running:
+                continue
             if self._current_data.rpm > 0 or self._current_data.power > 0:
                 self.notify_bike_data(self._current_data)
 
-    async def stop(self):
-        if self.server and self.running:
+    async def stop_server(self):
+        if self.server and self.ble_running:
             try:
                 await self.server.stop()
             except Exception as e:
                 self._log(f"停止服务时出错: {e}", "WARN")
+        self.ble_running = False
+        self.server = None
+
+    async def stop_all(self):
+        await self.stop_server()
         
         if self._pubsub_writer:
             self._pubsub_writer.close()
@@ -325,7 +347,7 @@ class FTMSGattServer:
         self._log("FTMS Server 已停止")
 
     def notify_bike_data(self, data: BikeData):
-        if not self.server or not self.running:
+        if not self.server or not self.running or not self.ble_running:
             return
 
         payload = self._build_indoor_bike_data(data)
@@ -362,6 +384,41 @@ class FTMSGattServer:
         
         return payload
 
+    async def set_enabled(self, enabled: bool):
+        # Keep desired state and actual BLE runtime state consistent.
+        # This also fixes cold-start when enabled=True but BLE server hasn't started yet.
+        if self.enabled == enabled:
+            if enabled and not self.ble_running:
+                self._log("软开关=开启，但 BLE 未运行，执行补偿启动")
+                await self.start_server()
+            elif (not enabled) and self.ble_running:
+                self._log("软开关=关闭，但 BLE 仍在运行，执行补偿停止")
+                await self.stop_server()
+            return
+        self.enabled = enabled
+        if enabled:
+            self._log("软开关切换：开启 FTMS 层")
+            await self.start_server()
+        else:
+            self._log("软开关切换：关闭 FTMS 层")
+            await self.stop_server()
+
+
+def _read_ftms_enabled() -> bool:
+    try:
+        with CONFIG_FILE.open("r") as f:
+            data = json.load(f)
+        val = data.get("ftms_layer_enabled", True)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, (int, float)):
+            return bool(val)
+        if isinstance(val, str):
+            return val.strip().lower() in ("1", "true", "yes", "on")
+    except Exception:
+        pass
+    return True
+
 
 async def main():
     server = FTMSGattServer(name="BikeCon-FTMS")
@@ -379,8 +436,25 @@ async def main():
         except NotImplementedError:
             pass
 
+    async def config_watcher():
+        last = None
+        while not stop_event.is_set():
+            try:
+                enabled = _read_ftms_enabled()
+                if enabled != last:
+                    await server.set_enabled(enabled)
+                    last = enabled
+                elif enabled and not server.ble_running:
+                    # Self-heal when BLE crashed but config stays enabled.
+                    await server.set_enabled(True)
+            except Exception as e:
+                server._log(f"config_watcher 异常: {e}", "ERROR")
+            await asyncio.sleep(2)
+
     try:
-        await server.start()
+        await server.start_background()
+        await server.set_enabled(_read_ftms_enabled())
+        watcher_task = asyncio.create_task(config_watcher())
         print("[FTMS] 服务运行中，按 Ctrl+C 停止")
         await stop_event.wait()
     except Exception as e:
@@ -388,8 +462,12 @@ async def main():
         import traceback
         traceback.print_exc()
     finally:
+        try:
+            watcher_task.cancel()
+        except Exception:
+            pass
         if server.running:
-            await server.stop()
+            await server.stop_all()
 
 
 if __name__ == "__main__":
