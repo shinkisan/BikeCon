@@ -132,9 +132,11 @@ journalctl -u BikeCon-bike.service -f
 ## 架构
 
 ```
-自行车 (BLE) → bike_driver.py → mixer.py → USB游戏手柄
-                    ↓               ↑ 
-            webapp.py（管理界面）  webapp.py（虚拟手柄）/Joycon_service.py
+自行车 (BLE) → bike_driver.py → bike_service.py → mixer.py → USB游戏手柄
+                                 ↓             ↑
+                           webapp.py（管理界面）  webapp.py（虚拟手柄）/joycon_service.py
+                                 ↓
+                           ftms_server.py（FTMS兼容层） → 第三方App（如 GTBIKEV）
 ```
 
 ## 许可与声明
