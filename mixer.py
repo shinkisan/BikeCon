@@ -41,17 +41,33 @@ class Mixer:
             try:
                 with CONFIG_PATH.open(encoding="utf-8") as f:
                     config = json.load(f)
-                    self.bike_target = config.get("target", "disabled")
-                    self.bike_max_rpm = config.get("max_rpm", 90)
+                    self.bike_target = config.get("target", self.bike_target)
+                    self.bike_max_rpm = int(config.get("max_rpm", self.bike_max_rpm))
                     print(f"[Mixer] 配置加载成功: Target={self.bike_target}, MaxRPM={self.bike_max_rpm}")
             except Exception as e:
                 print(f"[Mixer] 配置读取失败: {e}")
     
     def save_config(self):
-        """保存当前配置到文件"""
+        """仅更新映射字段，保留配置中的其他键值"""
         try:
-            with CONFIG_PATH.open(encoding="utf-8", mode="w") as f:
-                json.dump({"target": self.bike_target, "max_rpm": self.bike_max_rpm}, f)
+            config = {}
+            if CONFIG_PATH.exists():
+                try:
+                    with CONFIG_PATH.open(encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict):
+                        config = data
+                except Exception:
+                    config = {}
+
+            config["target"] = self.bike_target
+            config["max_rpm"] = int(self.bike_max_rpm)
+
+            CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = CONFIG_PATH.with_suffix(".tmp")
+            with tmp_path.open(encoding="utf-8", mode="w") as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, CONFIG_PATH)
             print("[Mixer] 配置已持久化")
         except Exception as e:
             print(f"[Mixer] 配置保存失败: {e}")

@@ -500,9 +500,10 @@ app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 DEFAULT_CONFIG = {
+    "bike_type": "keep",
     "target": "disabled",
     "max_rpm": 90,
-    "ftms_layer_enabled": True,
+    "ftms_layer_enabled": False,
     "language": "zh",
 }
 
@@ -512,7 +513,11 @@ def _sanitize_config_update(payload: dict):
         return None, "invalid payload"
     updates = {}
     for k, v in payload.items():
-        if k == "target":
+        if k == "bike_type":
+            if v not in ("keep", "ftms"):
+                return None, "bike_type must be keep or ftms"
+            updates[k] = v
+        elif k == "target":
             if not isinstance(v, str):
                 return None, "target must be string"
             updates[k] = v
@@ -546,6 +551,8 @@ def _read_config():
                 cfg.update(data)
         except Exception:
             pass
+    if str(cfg.get("bike_type", "keep")).strip().lower() == "ftms":
+        cfg["ftms_layer_enabled"] = False
     return cfg
 
 
@@ -555,6 +562,21 @@ def _write_config(cfg: dict):
     with tmp_path.open("w") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
     os.replace(tmp_path, CONFIG_FILE)
+
+
+def _is_ftms_forced_off(cfg: dict) -> bool:
+    bike_type = str(cfg.get("bike_type", "keep")).strip().lower()
+    return bike_type == "ftms"
+
+
+def _config_bool(val, default: bool = False) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    if isinstance(val, str):
+        return val.strip().lower() in ("1", "true", "yes", "on")
+    return default
 
 # --- 4. 路由接口 ---
 
@@ -577,6 +599,8 @@ async def update_config(payload: dict):
             return JSONResponse(status_code=400, content={"error": err})
         cfg = _read_config()
         cfg.update(updates)
+        if _is_ftms_forced_off(cfg):
+            cfg["ftms_layer_enabled"] = False
         _write_config(cfg)
         return JSONResponse(content={"ok": True})
     except Exception as e:
@@ -620,8 +644,13 @@ async def get_session(session_id: int):
 async def ftms_status():
     try:
         cfg = _read_config()
-        enabled = cfg.get("ftms_layer_enabled", True)
-        return JSONResponse(content={"enabled": bool(enabled)})
+        forced_off = _is_ftms_forced_off(cfg)
+        enabled = _config_bool(cfg.get("ftms_layer_enabled", False), False) and (not forced_off)
+        return JSONResponse(content={
+            "enabled": enabled,
+            "forced_off": forced_off,
+            "bike_type": str(cfg.get("bike_type", "keep")).strip().lower(),
+        })
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -629,6 +658,13 @@ async def ftms_status():
 async def ftms_start():
     try:
         cfg = _read_config()
+        if _is_ftms_forced_off(cfg):
+            cfg["ftms_layer_enabled"] = False
+            _write_config(cfg)
+            return JSONResponse(
+                status_code=409,
+                content={"ok": False, "error": "ftms_layer_forced_off_when_bike_type_ftms"}
+            )
         cfg["ftms_layer_enabled"] = True
         _write_config(cfg)
         return JSONResponse(content={"ok": True})

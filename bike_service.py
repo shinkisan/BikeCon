@@ -3,12 +3,49 @@ import json
 import os
 import logging
 import logging.handlers
+import importlib
 import shutil
 import atexit
 import glob
 import signal
 from pathlib import Path
-from bike_driver import BikeClient, BikeData, BikeStatus
+
+CONFIG_PATH = Path("/etc/BikeCon/config.json")
+SUPPORTED_BIKE_TYPES = {
+    "keep": "bike_driver_keep",
+    "ftms": "bike_driver_ftms",
+}
+
+
+def _read_bike_type() -> str:
+    val = "keep"
+    try:
+        if CONFIG_PATH.exists():
+            with CONFIG_PATH.open(encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                raw = data.get("bike_type", "keep")
+                if isinstance(raw, str):
+                    val = raw.strip().lower()
+    except Exception as e:
+        print(f"[BikeService] Failed to load bike_type from config.json: {e}")
+
+    if val not in SUPPORTED_BIKE_TYPES:
+        print(f"[BikeService] Unsupported bike_type '{val}', fallback to 'keep'")
+        return "keep"
+    return val
+
+
+BIKE_TYPE = _read_bike_type()
+DRIVER_MODULE_NAME = SUPPORTED_BIKE_TYPES[BIKE_TYPE]
+
+try:
+    _driver_module = importlib.import_module(DRIVER_MODULE_NAME)
+    BikeClient = _driver_module.BikeClient
+    BikeData = _driver_module.BikeData
+    BikeStatus = _driver_module.BikeStatus
+except Exception as e:
+    raise RuntimeError(f"[BikeService] Failed to load driver module '{DRIVER_MODULE_NAME}': {e}") from e
 
 IDENTITY_PATH = Path("/etc/BikeCon/identity.json")
 
@@ -115,6 +152,7 @@ class AsyncUnixClient:
 
 class BikeService:
     def __init__(self):
+        print(f"[BikeService] Driver selected: type={BIKE_TYPE}, module={DRIVER_MODULE_NAME}")
         self.client = BikeClient(
             BIKE_MAC,
             data_callback=self.on_data,
@@ -299,7 +337,7 @@ class BikeService:
         asyncio.create_task(self.mixer.send(status_msg))
 
     async def run(self):
-        print(f"[BikeService] Starting ({BIKE_MAC})...")
+        print(f"[BikeService] Starting bike_type={BIKE_TYPE} ({BIKE_MAC})...")
         
         await self.start_servers()
         
