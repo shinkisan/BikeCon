@@ -10,3 +10,4 @@ logs/
 .github/prompts/
 debug/
 reference/
+.venv
