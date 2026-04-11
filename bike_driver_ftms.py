@@ -38,6 +38,7 @@ class BikeData:
 class BikeClient:
     INDOOR_BIKE_DATA_UUID = "00002ad2-0000-1000-8000-00805f9b34fb"
     FTM_CONTROL_POINT_UUID = "00002ad9-0000-1000-8000-00805f9b34fb"
+    FTM_STATUS_UUID = "00002ada-0000-1000-8000-00805f9b34fb"
 
     HEARTBEAT_INTERVAL = 1.0
     DATA_TIMEOUT_LIMIT = 20.0
@@ -55,6 +56,8 @@ class BikeClient:
         self.status_callback = status_callback
 
         self.client: Optional[BleakClient] = None
+        # track last sent control payload (used to interpret CP indications)
+        self._last_control_sent: Optional[bytes] = None
         self.running = False
 
         self._current_status = BikeStatus.READY
@@ -165,11 +168,9 @@ class BikeClient:
         if flags & (1 << 12) and ptr + 2 <= len(payload):
             ptr += 2  # remaining time
 
+        # Do NOT infer status from instantaneous indoor data here.
+        # Status should be determined by explicit control events or status notifications.
         status = self._current_status
-        if rpm > 0 or power > 0:
-            status = BikeStatus.ACTIVE
-        elif status == BikeStatus.ACTIVE:
-            status = BikeStatus.READY
 
         return BikeData(
             rpm=to_int(rpm),
@@ -194,6 +195,7 @@ class BikeClient:
             self._log(f"Indoor Bike Data parse failed: {e}")
             return
 
+        # Update measurement fields only; do NOT change driver status here.
         self._rpm = bike_data.rpm
         self._power = bike_data.power
         self._duration = bike_data.duration
@@ -201,14 +203,8 @@ class BikeClient:
         self._calories = bike_data.calories
         self._speed = bike_data.speed
         self._current_resistance = bike_data.resistance
-        self._status = bike_data.status_code
 
-        try:
-            new_status = BikeStatus(bike_data.status_code)
-        except ValueError:
-            new_status = BikeStatus.UNKNOWN
-        self._set_status(new_status)
-
+        # Broadcast measured data. Status changes must come from control/status paths.
         self.data_callback(bike_data)
 
     def _on_control_point_indication(self, sender: Any, data: bytearray):
@@ -217,6 +213,49 @@ class BikeClient:
             req_opcode = payload[1]
             result_code = payload[2]
             self._log(f"ControlPoint rsp opcode=0x{req_opcode:02X} result=0x{result_code:02X}")
+
+            # Interpret successful responses as authoritative state confirmations
+            # result_code 0x01 means success per FTMS
+            try:
+                if result_code == 0x01:
+                    # START/RESUME (0x07) -> ACTIVE
+                    if req_opcode == 0x07:
+                        self._log("ControlPoint: START confirmed -> ACTIVE")
+                        self._set_status(BikeStatus.ACTIVE)
+                    # PAUSE/STOP (0x08) -> need to inspect last sent control param
+                    elif req_opcode == 0x08:
+                        param = None
+                        if self._last_control_sent and len(self._last_control_sent) >= 2:
+                            param = self._last_control_sent[1]
+                        if param == 0x02:
+                            self._log("ControlPoint: PAUSE confirmed -> PAUSED")
+                            self._set_status(BikeStatus.PAUSED)
+                        else:
+                            self._log("ControlPoint: STOP confirmed -> READY")
+                            self._set_status(BikeStatus.READY)
+            except Exception as e:
+                self._log(f"Failed to apply CP confirmation to status: {e}")
+
+    def _on_ftm_status(self, sender: Any, data: bytearray):
+        """Handle FTM Status characteristic notifications (authoritative state)."""
+        try:
+            payload = bytes(data)
+            if not payload:
+                return
+            code = payload[0]
+            # Map common server status opcodes to BikeStatus
+            if code == 0x04:
+                new_status = BikeStatus.ACTIVE
+            elif code == 0x02:
+                new_status = BikeStatus.PAUSED
+            elif code in (0x01, 0x00):
+                new_status = BikeStatus.READY
+            else:
+                return
+            self._log(f"FTM Status notify code=0x{code:02X} -> {new_status.name}")
+            self._set_status(new_status)
+        except Exception as e:
+            self._log(f"FTM Status parse failed: {e}")
 
     async def _ensure_control(self) -> bool:
         if not self.running:
@@ -239,6 +278,11 @@ class BikeClient:
 
             try:
                 if self.client and self.client.is_connected:
+                    # record last control payload at time of write so indications can be interpreted
+                    try:
+                        self._last_control_sent = bytes(payload)
+                    except Exception:
+                        self._last_control_sent = None
                     await self.client.write_gatt_char(self.FTM_CONTROL_POINT_UUID, payload, response=True)
                 else:
                     self._log("TX dropped: bike not connected")
@@ -271,6 +315,10 @@ class BikeClient:
                 await client.start_notify(self.FTM_CONTROL_POINT_UUID, self._on_control_point_indication)
             except Exception as e:
                 self._log(f"Control Point indication unavailable: {e}")
+            try:
+                await client.start_notify(self.FTM_STATUS_UUID, self._on_ftm_status)
+            except Exception as e:
+                self._log(f"FTM Status notify unavailable: {e}")
 
             self.client = client
             self._last_data_time = time.time()
@@ -292,6 +340,10 @@ class BikeClient:
                 pass
             try:
                 await self.client.stop_notify(self.FTM_CONTROL_POINT_UUID)
+            except Exception:
+                pass
+            try:
+                await self.client.stop_notify(self.FTM_STATUS_UUID)
             except Exception:
                 pass
             try:
@@ -396,8 +448,9 @@ class BikeClient:
             return False
         ok = await self._queue_control(bytes([0x07]))
         if ok:
-            self._set_status(BikeStatus.TRANSITION)
-            self._log("Sent start/resume command")
+            # Interface preserved for compatibility with BikeService,
+            # but do not change status here — wait for explicit confirmation.
+            self._log("Sent start/resume command (status change deferred)")
         return ok
 
     async def wake_bike(self):
