@@ -1,174 +1,174 @@
 # BikeCon
 
-[English README](./README_EN.md)
+[中文说明](./README_ZH.md)
 
-BikeCon 是一个将动感单车数据映射为 **虚拟游戏手柄** 的系统。它允许你通过 Linux 设备（推荐树莓派 Zero 2W）作为中继，在电脑上使用单车作为输入设备。
+BikeCon maps indoor bike data to a **virtual game controller**. It lets you use a Linux device (Raspberry Pi Zero 2W recommended) as a bridge so your bike can act as an input device on a PC.
 
-目前已支持两类输入协议：
+BikeCon currently supports two input protocol types:
 
-- **部分 Keep 动感单车私有协议**
-- **FTMS 通用协议设备**
+- **Private protocol of some Keep bikes**
+- **Standard FTMS-compatible devices**
 
-此外，项目仍保留一个可选的 **FTMS 兼容层服务**，用于将KEEP单车的数据再广播为 FTMS，供第三方应用（如 GTBIKEV / Zwift）连接。
+In addition, BikeCon keeps an optional **FTMS compatibility layer service** that rebroadcasts Keep bike data as FTMS for third-party apps (for example, GTBIKEV / Zwift).
 
-## 硬件需求
-- **骑行设备（满足其一）**:
-  - Keep 动感单车（目前已支持 Keep C2 Lite，固件版本 1.0.1）
-  - 支持 FTMS 的通用 BLE 动感单车
-- **中继电脑**: 一个运行 Linux 的小型电脑（需自带蓝牙并支持 USB Gadget 模式，如树莓派 Zero 2W） 。接下来用树莓派泛指该类型设备。
-- **Joy-Con（可选）**: 用于组合按键输入。如果没有可以使用程序配套的网页端虚拟手柄。
+## Hardware Requirements
+- **Cycling device (one of the following):**
+  - Keep bike (currently tested with Keep C2 Lite, firmware 1.0.1)
+  - Generic BLE indoor bike with FTMS support
+- **Bridge device:** A small Linux computer with Bluetooth and USB Gadget support (e.g. Raspberry Pi Zero 2W). In this document, this type of device is referred to as “Raspberry Pi”.
+- **Joy-Con (optional):** For combined button input. If unavailable, use the built-in web virtual controller.
 
 ---
-## 克隆代码到树莓派上
+## Clone to Raspberry Pi
 ```bash
-# 克隆项目
+# Clone repo
 git clone https://github.com/shinkisan/BikeCon.git
 
-# 进入项目目录
+# Enter project directory
 cd BikeCon
 ```
 
-## 第一步：准备设备身份信息
+## Step 1: Prepare Device Identity
 
-根据你使用的单车类型，流程不同：
+The flow depends on your bike type:
 
-- **Keep 模式**：需要从 Keep App 通信中提取鉴权信息。
-- **FTMS 模式**：不需要 Keep 抓包，直接扫描并选择目标 FTMS 设备。
+- **Keep mode:** You need to extract auth info from Keep App communication.
+- **FTMS mode:** No Keep packet capture required; just scan and select the target FTMS device.
 
 ---
-### Keep 模式：准备鉴权信息 (必须)
+### Keep Mode: Prepare Auth Info (Required)
 
-在安装项目之前，你必须从官方 App 的通信中提取鉴权所需信息。
+Before installation, you must extract authentication information from official app traffic.
 
-**重要：你的单车（包括以后使用该程序时）必须处于断网状态，否则所有数据都会走wifi网络**
+**Important: your bike must stay offline (including future usage with this project), otherwise data may go through Wi-Fi instead of BLE.**
 
-### 1.1 从安卓设备提取 HCI 日志
-1. **开启开发者模式**: 在 “关于手机” 页面，查找 “版本号” 或 “软件版本号”，持续点击直到屏幕提示 “已进入开发者模式”。
-2. **启用 HCI 收集**: 进入“开发者选项”，开启 **“启用蓝牙 HCI 监听日志”**。
-3. **产生通信数据**:
-   - 重启手机蓝牙。
-   - 打开 **Keep App**，连接你的单车并骑行几分钟。
-   - 结束运动，关闭 Keep App。
-4. **导出日志**: 
-   - 找到手机存储中的日志文件（通常在 `/data/misc/bluetooth/logs/btsnoop_hci.log` ；或通过 `adb bugreport bugreport.zip`导出，解压后一般在`FS/data/misc/bluetooth/logs/btsnoop_hci.log`）。
-   - 将该文件发送至你的树莓派。
+### 1.1 Extract HCI logs from Android
+1. **Enable Developer Options:** In “About phone”, tap “Build number” / “Software version” repeatedly until Developer Mode is enabled.
+2. **Enable HCI logging:** In Developer Options, enable **Bluetooth HCI snoop log**.
+3. **Generate traffic:**
+   - Restart Bluetooth on the phone.
+   - Open **Keep App**, connect your bike, and ride for a few minutes.
+   - End workout and close Keep App.
+4. **Export logs:**
+   - Locate the log file (usually `/data/misc/bluetooth/logs/btsnoop_hci.log`; or export via `adb bugreport bugreport.zip`, then it is typically under `FS/data/misc/bluetooth/logs/btsnoop_hci.log`).
+   - Copy the file to your Raspberry Pi.
 
-### Keep 模式：生成配置文件
-项目提供了自动工具 `identity_gen.py`，会生成 `identity.json`，并自动更新 `config.json` 里的 `bike_type`。
+### Keep Mode: Generate config
+BikeCon provides `identity_gen.py`, which generates `identity.json` and automatically updates `bike_type` in `config.json`.
 
-**Keep 模式（有日志参数）**:
+**Keep mode (with log file argument):**
 ```bash
-# 安装抓包解析依赖
+# Install packet parsing dependencies
 sudo apt install tshark -y
 pip install pyshark
 python3 identity_gen.py btsnoop_hci.log
 ```
 
-### FTMS 模式：生成配置文件（无需抓包）
+### FTMS Mode: Generate config (no packet capture)
 
-**通用 FTMS 模式（无参数）**:
+**Generic FTMS mode (no arguments):**
 ```bash
 python3 identity_gen.py
 ```
-运行后会提示你按 `Enter` 进入 BLE 扫描（`Esc` 退出），然后选择设备生成 `identity.json`。
+After launch, press `Enter` to start BLE scan (`Esc` to exit), then choose a device to generate `identity.json`.
 
-## 第二步：安装与启动
+## Step 2: Install and Run
 
-### 安装
+### Install
 ```bash
 chmod +x install.sh
 sudo ./install.sh
 ```
 
-### 启动服务
+### Start services
 ```bash
 sudo ./start.sh
 ```
 
-### 停止服务
+### Stop services
 ```bash
 sudo ./stop.sh
 ```
 
-### 卸载
+### Uninstall
 ```bash
 sudo ./uninstall.sh
 ```
 
-## 服务说明
+## Services
 
-BikeCon 包含以下 6 个 systemd 服务，按启动顺序排列：
+BikeCon includes these 6 systemd services (startup order):
 
-1. **BikeCon-hardware.service** - 配置 USB Gadget，模拟 HID 手柄
-2. **BikeCon-mixer.service** - 混合单车数据与手柄按键
-3. **BikeCon-bike.service** - BLE自行车连接
-4. **BikeCon-joycon.service** - Joy-Con输入处理
-5. **BikeCon-web.service** - Web界面 (端口8000)
-6. **BikeCon-ftms.service** - FTMS 兼容层（对外提供 FTMS BLE 服务）
+1. **BikeCon-hardware.service** - Configure USB Gadget and emulate HID gamepad
+2. **BikeCon-mixer.service** - Mix bike data and controller button input
+3. **BikeCon-bike.service** - BLE bike connection
+4. **BikeCon-joycon.service** - Joy-Con input handling
+5. **BikeCon-web.service** - Web UI (port 8000)
+6. **BikeCon-ftms.service** - FTMS compatibility layer (exposes FTMS BLE service externally)
 
-## FTMS 兼容层（可选）
+## FTMS Compatibility Layer (Optional)
 
-项目内置了一个 FTMS 兼容层，可将KEEP单车数据通过标准 FTMS 服务对外广播，用于兼容部分第三方应用（例如 **GTBIKEV**）。
+BikeCon includes an FTMS compatibility layer that rebroadcasts Keep bike data through standard FTMS service for some third-party apps (e.g. **GTBIKEV**).
 
-- 默认状态：`config.json` 中 `ftms_layer_enabled` 默认是 `false`（关闭）
-- 启用方式 1（推荐）：打开 Web 设置页，将“FTMS 服务”切换为开启
-- 启用方式 2：手动编辑 `/etc/BikeCon/config.json`，将 `ftms_layer_enabled` 改为 `true`
-- 强制关闭规则：当 `config.json` 中 `bike_type` 为 `ftms` 时，FTMS 兼容层会被强制关闭（Web 按钮会显示不可用）
+- Default: `ftms_layer_enabled` in `config.json` is `false` (disabled)
+- Enable method 1 (recommended): turn on “FTMS Service” in Web settings
+- Enable method 2: edit `/etc/BikeCon/config.json` and set `ftms_layer_enabled` to `true`
+- Forced-off rule: when `bike_type` in `config.json` is `ftms`, FTMS compatibility layer is forcibly disabled (Web button will appear unavailable)
 
-## Web界面
+## Web UI
 
-启动后访问：http://<树莓派IP>:8000
+After startup, open: `http://<raspberry-pi-ip>:8000`
 
-## 日志查看
-跟踪单车数据包（运行时）：
+## Logs
+View bike packet log (runtime):
 ```bash
 tail -f /dev/shm/BikeCon/bike_raw_data.log
 ```
 
-跟踪单车数据包（持久化保存）：
+View bike packet log (persistent):
 ```bash
 tail -f /var/log/BikeCon/bike_raw_data.log
 ```
 
-查看所有服务日志：
+View all service logs:
 ```bash
 journalctl -u BikeCon-*.service -f
 ```
 
-查看特定服务日志：
+View specific service log:
 ```bash
 journalctl -u BikeCon-bike.service -f
 ```
 
-## 配置
+## Configuration
 
-- `config.json` - 应用配置
-- `identity.json` - 鉴权数据
+- `config.json` - App configuration
+- `identity.json` - Authentication data
 
-## 问题反馈
+## Issue Reporting
 
-项目未经充分测试，如果遇到问题或请求其它型号支持，请带上相关日志提issue
+This project is not fully tested yet. If you hit issues or request support for other models, please open an issue with related logs.
 
-## 开发
+## Development
 
-#### 架构
+### Architecture
 
 ```
-自行车 (BLE) → bike_driver_xxxx.py → bike_service.py → mixer.py → USB游戏手柄
-                              ↓             ↑
-                        webapp.py   webapp.py（虚拟手柄）/joycon_service.py
-                              ↓
-                        ftms_server.py（FTMS兼容层） → 第三方App（如 GTBIKEV）
+Bike (BLE) -> bike_driver_xxxx.py -> bike_service.py -> mixer.py -> USB gamepad
+                         ↓                  ↑
+                      webapp.py     webapp.py (virtual gamepad) / joycon_service.py
+                         ↓
+                    ftms_server.py (FTMS compatibility layer) -> Third-party apps (e.g. GTBIKEV)
 ```
 
-### 联调脚本
-如果你想要测试，这两个脚本可能对你有所帮助：
+### Integration Test Scripts
+If you want to test locally, these two scripts may help:
 
 ### 1) `dev/fake_ftms_server.py`
 
-用途：在没有真实 FTMS 设备时，模拟一台可被 BikeCon 连接的 FTMS 动感单车。
+Purpose: simulate an FTMS indoor bike that BikeCon can connect to when you do not have real FTMS hardware.
 
-常用命令：
+Common commands:
 
 ```bash
 python3 dev/fake_ftms_server.py
@@ -176,50 +176,48 @@ python3 dev/fake_ftms_server.py --name BikeCon-Fake-FTMS --hz 5 --web-port 8080
 python3 dev/fake_ftms_server.py --start-active
 ```
 
-启动后：
+After startup:
 
-- 网页管理默认地址：`http://<设备IP>:8080`
-- 在 BikeCon 使用 FTMS 模式，并将 `identity.json` 的 `bike_mac` 指向该模拟设备（可通过扫描获得）
+- Default web management URL: `http://<device-ip>:8080`
+- In BikeCon FTMS mode, point `identity.json` `bike_mac` to this simulated device (can be discovered by scan)
 
 ### 2) `dev/fake_ftms_client.py`
 
-用途：作为 FTMS 客户端连接到 FTMS 服务（可连接 BikeCon 的 FTMS 兼容层，或 fake_ftms_server）。
+Purpose: connect as an FTMS client to an FTMS service (BikeCon FTMS layer or `fake_ftms_server`).
 
-常用命令：
+Common commands:
 
 ```bash
-# 按名称扫描并连接（默认目标 BikeCon-FTMS）
+# Scan and connect by name (default target: BikeCon-FTMS)
 python3 dev/fake_ftms_client.py
 
-# 指定设备名或 MAC
+# Connect by device name or MAC
 python3 dev/fake_ftms_client.py BikeCon-Fake-FTMS
 python3 dev/fake_ftms_client.py AA:BB:CC:DD:EE:FF
 
-# 交互模式
+# Interactive mode
 python3 dev/fake_ftms_client.py -i
 
-# 无 Web UI（仅控制台）
+# Console-only mode (no web UI)
 python3 dev/fake_ftms_client.py --no-web
 ```
 
-说明：
+Notes:
 
-- `fake_ftms_client.py` 默认 Web 端口是 `8080`（`--port` 可改）
-- `fake_ftms_server.py` 的 fake_ftms_ui 默认也是 `8080`
-- 如果两个脚本在同一台机器同时运行，请至少修改一个端口，避免冲突
+- `fake_ftms_client.py` default web port is `8080` (change with `--port`)
+- `fake_ftms_server.py` web UI default is also `8080`
+- If both run on the same machine, change at least one port to avoid conflicts
 
-## 许可与声明
+## License and Disclaimer
 
-本项目采用 GNU GPL v3 协议开源
+This project is licensed under GNU GPL v3.
 
-本项目仅用于技术研究与个人学习，不保证对所有硬件和固件版本的兼容性。因使用本项目导致的设备问题或 Keep 账号异常，作者概不负责。
+This project is for technical research and personal learning only. Compatibility across all hardware and firmware versions is not guaranteed. The author is not responsible for device issues or Keep account issues caused by using this project.
 
-本项目大量使用AI，代码风格杂乱，中英双语日志和备注乱飞，有时间会慢慢打磨😝。
+This project heavily uses AI; code style is still mixed and being improved over time.
 
-## 特别感谢
+## Special Thanks
 
-FTMS 兼容层功能的实现参考了以下项目的代码与思路，特此感谢：
+FTMS compatibility layer implementation references code and ideas from:
 
 - https://github.com/happyderekl/Bike-FTMS-Bridge
-
-

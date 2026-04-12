@@ -1,6 +1,6 @@
 # BikeCon
 
-[中文说明](./README.md)
+[中文说明](./README_ZH.md)
 
 BikeCon maps indoor bike data to a **virtual game controller**. It lets you use a Linux device (Raspberry Pi Zero 2W recommended) as a bridge so your bike can act as an input device on a PC.
 
@@ -151,7 +151,7 @@ This project is not fully tested yet. If you hit issues or request support for o
 
 ## Development
 
-#### Architecture
+### Architecture
 
 ```
 Bike (BLE) -> bike_driver_xxxx.py -> bike_service.py -> mixer.py -> USB gamepad
