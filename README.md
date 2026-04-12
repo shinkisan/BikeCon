@@ -35,18 +35,21 @@ cd BikeCon
    - 将该文件发送至你的树莓派。
 
 ### 1.2 生成配置文件
-项目提供了一个自动提取工具 `identity_gen.py`，它会解析二进制日志并生成 `identity.json` 。
+项目提供了自动工具 `identity_gen.py`，会生成 `identity.json`，并自动更新 `config.json` 里的 `bike_type`。
 
-**环境准备**:
+**Keep 模式（有日志参数）**:
 ```bash
-# 安装抓包解析引擎
+# 安装抓包解析依赖
 sudo apt install tshark -y
-# 安装 Python 依赖
 pip install pyshark
-# 将你的日志文件（如 btsnoop_hci.log）作为参数
 python3 identity_gen.py btsnoop_hci.log
 ```
-执行完成后，本地会生成一个 identity.json 文件。请检查数据准确性。
+
+**通用 FTMS 模式（无参数）**:
+```bash
+python3 identity_gen.py
+```
+运行后会提示你按 `Enter` 进入 BLE 扫描（`Esc` 退出），然后选择设备生成 `identity.json`。
 
 ## 第二步：安装与启动
 
@@ -92,6 +95,7 @@ BikeCon 包含以下 6 个 systemd 服务，按启动顺序排列：
 - 默认状态：`config.json` 中 `ftms_layer_enabled` 默认是 `false`（关闭）
 - 启用方式 1（推荐）：打开 Web 设置页，将“FTMS 服务”切换为开启
 - 启用方式 2：手动编辑 `/etc/BikeCon/config.json`，将 `ftms_layer_enabled` 改为 `true`
+- 强制关闭规则：当 `config.json` 中 `bike_type` 为 `ftms` 时，FTMS 兼容层会被强制关闭（Web 按钮会显示不可用）
 
 FTMS 服务进程会轮询配置并自动生效，通常无需手动重启服务。
 
@@ -122,7 +126,7 @@ journalctl -u BikeCon-bike.service -f
 
 ## 配置
 
-- `config.json` - 应用配置
+- `config.json` - 应用配置（包含 `bike_type`：`keep` 或 `ftms`）
 - `identity.json` - 鉴权数据
 
 ## 问题反馈
@@ -132,7 +136,7 @@ journalctl -u BikeCon-bike.service -f
 ## 架构
 
 ```
-自行车 (BLE) → bike_driver.py → bike_service.py → mixer.py → USB游戏手柄
+自行车 (BLE) → bike_driver_keep.py / bike_driver_ftms.py → bike_service.py → mixer.py → USB游戏手柄
                                  ↓             ↑
                            webapp.py（管理界面）  webapp.py（虚拟手柄）/joycon_service.py
                                  ↓

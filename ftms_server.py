@@ -408,7 +408,12 @@ def _read_ftms_enabled() -> bool:
     try:
         with CONFIG_FILE.open("r") as f:
             data = json.load(f)
-        val = data.get("ftms_layer_enabled", True)
+
+        bike_type = str(data.get("bike_type", "keep")).strip().lower()
+        if bike_type == "ftms":
+            return False
+
+        val = data.get("ftms_layer_enabled", False)
         if isinstance(val, bool):
             return val
         if isinstance(val, (int, float)):
@@ -417,7 +422,7 @@ def _read_ftms_enabled() -> bool:
             return val.strip().lower() in ("1", "true", "yes", "on")
     except Exception:
         pass
-    return True
+    return False
 
 
 async def main():

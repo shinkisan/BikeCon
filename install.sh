@@ -34,26 +34,17 @@ if [[ ! -f "$SCRIPT_DIR/identity.json" ]]; then
     echo -e "  ${RED}CRITICAL: identity.json must be generated BEFORE running this installation script.${NC}"
     echo ""
     echo "  How to generate identity.json:"
-    echo "  1. Capture BLE HCI traffic from your Keep app:"
-    echo "     - On your Android device running Keep app"
-    echo "     - Enable HCI logging in Developer Options:"
-    echo "       Settings → Developer Options → Enable Bluetooth HCI snoop log"
-    echo "     - Run Keep app and connect to your bike"
-    echo "     - Disable HCI logging when done"
-    echo "     - Extract HCI log file (usually /data/misc/bluetooth/logs/btsnoop_hci.log before Android 11"
-    echo "       or run 'adb bugreport bugreport.zip' and extract the zip file to find the log at"
-    echo "       FS/data/misc/bluetooth/logs/btsnoop_hci.log)"
+    echo "  Option A - Keep bike (from HCI log):"
+    echo "     python3 identity_gen.py /path/to/btsnoop_hci.log"
     echo ""
-    echo "  2. Run identity_gen.py to extract credentials:"
-    echo "     python3 identity_gen.py /data/misc/bluetooth/logs/btsnoop_hci.log"
+    echo "  Option B - Generic FTMS bike (BLE scan):"
+    echo "     python3 identity_gen.py"
+    echo "     (Press Enter to continue FTMS scanning, or Esc to exit)"
     echo ""
-    echo "  3. This will generate identity.json containing:"
-    echo "     - bike_name: Your bike model"
-    echo "     - bike_mac: Bike Bluetooth MAC address"
-    echo "     - phone_mac: Your phone Bluetooth MAC address"
-    echo "     - uuid1, uuid2: Keep app authentication UUIDs"
+    echo "  identity_gen.py will generate identity.json"
+    echo "  and update config.json (bike_type) automatically."
     echo ""
-    echo "  4. Once identity.json is created, run this installation script again:"
+    echo "  Once identity.json is created, run this installation script again:"
     echo "     sudo ./install.sh"
     echo ""
     echo "Installation aborted."
@@ -188,6 +179,16 @@ fi
 chown -R root:root /opt/BikeCon
 chmod 755 /opt/BikeCon
 chmod 755 /opt/BikeCon/*.py 2>/dev/null || true
+
+# Ensure helper scripts are executable both in the source dir and installed dir
+for s in start.sh stop.sh uninstall.sh; do
+    if [[ -f "$SCRIPT_DIR/$s" ]]; then
+        chmod +x "$SCRIPT_DIR/$s"
+    fi
+    if [[ -f "/opt/BikeCon/$s" ]]; then
+        chmod +x "/opt/BikeCon/$s"
+    fi
+done
 
 chown -R root:root /etc/BikeCon
 chown root:bikecon /etc/BikeCon

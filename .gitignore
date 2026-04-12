@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+.codex
 identity.json
 identity.json.bak
 doc/
@@ -9,3 +10,4 @@ logs/
 .github/prompts/
 debug/
 reference/
+.venv
