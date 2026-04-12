@@ -92,11 +92,12 @@ class BikeClient:
             self.status_callback(old_status, new_status)
 
     def _normalize_resistance(self, raw: int) -> int:
-        # Some devices use 0.1 precision, others use integral levels.
-        if raw > 24:
-            val = round(raw / 10.0)
-        else:
-            val = raw
+        """
+        因为 set_resistance 使用了 level * 10 (0.1精度)，
+        为了保持对称，读取时也应统一除以 10。
+        """
+        # 比如：收到 10 -> 等级 1；收到 240 -> 等级 24
+        val = round(raw / 10.0)
         return max(0, int(val))
 
     def _parse_indoor_bike_data(self, data: bytearray) -> BikeData:
