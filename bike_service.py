@@ -209,7 +209,14 @@ class BikeService:
         _debug_log(f"[BikeService] Control: {cmd_type} - {msg}")
         
         if cmd_type == "set_resistance":
-            level = msg.get("level", 10)
+            if "level" not in msg:
+                _debug_log("[BikeService] Ignoring set_resistance: missing level")
+                return
+            try:
+                level = int(msg.get("level"))
+            except Exception:
+                _debug_log(f"[BikeService] Ignoring set_resistance: invalid level={msg.get('level')}")
+                return
             await self.client.set_resistance(level)
         elif cmd_type == "start":
             await self.client.start_bike()
