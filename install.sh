@@ -180,6 +180,16 @@ chown -R root:root /opt/BikeCon
 chmod 755 /opt/BikeCon
 chmod 755 /opt/BikeCon/*.py 2>/dev/null || true
 
+# Ensure helper scripts are executable both in the source dir and installed dir
+for s in start.sh stop.sh uninstall.sh; do
+    if [[ -f "$SCRIPT_DIR/$s" ]]; then
+        chmod +x "$SCRIPT_DIR/$s"
+    fi
+    if [[ -f "/opt/BikeCon/$s" ]]; then
+        chmod +x "/opt/BikeCon/$s"
+    fi
+done
+
 chown -R root:root /etc/BikeCon
 chown root:bikecon /etc/BikeCon
 chmod 775 /etc/BikeCon
