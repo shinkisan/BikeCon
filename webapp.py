@@ -253,29 +253,39 @@ class SessionTracker:
     def on_status(self, status_name: str):
         prev = self.last_status
         self.last_status = status_name
-        if prev == "TRANSITION" and status_name == "ACTIVE":
+        if status_name == "ACTIVE":
             self._ensure_session()
-            self.session["status"] = "ACTIVE"
-            self.session["active_start_ts"] = self._now()
-            self._persist_state()
-            return True
-        if prev == "ACTIVE" and status_name == "PAUSED":
-            if self.session and self.session.get("active_start_ts"):
-                self.session["active_duration_sec"] += max(0, self._now() - self.session["active_start_ts"])
-                self.session["active_start_ts"] = None
-            if self.session:
-                self.session["status"] = "PAUSED"
-            self._persist_state()
-            return True
-        if prev == "PAUSED" and status_name == "ACTIVE":
-            if self.session:
+            changed = False
+            if self.session.get("status") != "ACTIVE":
                 self.session["status"] = "ACTIVE"
+                changed = True
+            if not self.session.get("active_start_ts"):
                 self.session["active_start_ts"] = self._now()
+                changed = True
+            if changed:
                 self._persist_state()
-            return True
-        if status_name == "READY" and prev in ("ACTIVE", "PAUSED"):
+                return True
+            return False
+        if status_name == "PAUSED":
+            changed = False
             if self.session:
-                if prev == "ACTIVE" and self.session.get("active_start_ts"):
+                if self.session.get("status") == "ACTIVE" and self.session.get("active_start_ts"):
+                    self.session["active_duration_sec"] += max(0, self._now() - self.session["active_start_ts"])
+                    self.session["active_start_ts"] = None
+                    changed = True
+                if self.session.get("status") != "PAUSED":
+                    self.session["status"] = "PAUSED"
+                    changed = True
+            if changed:
+                self._persist_state()
+                return True
+            return False
+        if status_name == "READY" and (
+            prev in ("ACTIVE", "PAUSED")
+            or (self.session and self.session.get("status") in ("ACTIVE", "PAUSED"))
+        ):
+            if self.session:
+                if self.session.get("status") == "ACTIVE" and self.session.get("active_start_ts"):
                     self.session["active_duration_sec"] += max(0, self._now() - self.session["active_start_ts"])
                 self.session["active_start_ts"] = None
                 self.session["status"] = "READY"
@@ -732,10 +742,16 @@ async def websocket_endpoint(websocket: WebSocket):
                     else:
                         payload = None
                 else:
-                    payload = {
-                        "type": "set_resistance",
-                        "level": data.get('level', 10)
-                    }
+                    # Only forward set_resistance if a valid numeric level is provided
+                    lvl = data.get('level')
+                    try:
+                        lvl = int(lvl)
+                    except Exception:
+                        lvl = None
+                    if lvl is None:
+                        payload = None
+                    else:
+                        payload = {"type": "set_resistance", "level": lvl}
                 if payload:
                     await control_client.send(payload)
 
