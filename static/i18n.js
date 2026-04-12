@@ -57,9 +57,11 @@
             ftms_status: "状态：{state}",
             ftms_enabled: "已启用",
             ftms_disabled: "已禁用",
+            ftms_forced_off: "已强制关闭（FTMS 直连模式）",
             ftms_unknown: "未知",
             ftms_on: "开启",
             ftms_off: "关闭",
+            ftms_forced_button: "不可用",
 
             bike_target_label: "🚴 单车映射目标",
             bike_max_rpm_label: "最大 RPM (满量程)",
@@ -150,9 +152,11 @@
             ftms_status: "Status: {state}",
             ftms_enabled: "Enabled",
             ftms_disabled: "Disabled",
+            ftms_forced_off: "Forced Off (FTMS Direct Mode)",
             ftms_unknown: "Unknown",
             ftms_on: "Enable",
             ftms_off: "Disable",
+            ftms_forced_button: "Unavailable",
 
             bike_target_label: "🚴 Bike Mapping Target",
             bike_max_rpm_label: "Max RPM",

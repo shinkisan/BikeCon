@@ -1,4 +1,5 @@
 {
+  "bike_type": "keep",
   "target": "rt",
   "max_rpm": 90,
   "ftms_layer_enabled": false,

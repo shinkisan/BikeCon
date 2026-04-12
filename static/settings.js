@@ -1,13 +1,28 @@
-function setFTMSUI(active, stateText) {
+function setFTMSUI(active, stateText, opts = {}) {
+    const forcedOff = !!opts.forcedOff;
     const statusEl = document.getElementById('ftms-status');
     const btn = document.getElementById('ftms-toggle');
     if (statusEl) {
         statusEl.innerText = t('ftms_status', { state: stateText });
-        statusEl.style.color = active ? "var(--primary-accent)" : "#888";
+        if (forcedOff) {
+            statusEl.style.color = "#ffca28";
+        } else {
+            statusEl.style.color = active ? "var(--primary-accent)" : "#888";
+        }
     }
     if (btn) {
-        btn.innerText = active ? t('ftms_off') : t('ftms_on');
-        btn.classList.toggle('primary', !active);
+        btn.dataset.forcedOff = forcedOff ? "1" : "0";
+        if (forcedOff) {
+            btn.innerText = t('ftms_forced_button');
+            btn.classList.remove('primary');
+            btn.disabled = true;
+        } else {
+            btn.innerText = active ? t('ftms_off') : t('ftms_on');
+            btn.classList.toggle('primary', !active);
+            if (!btn.classList.contains('loading')) {
+                btn.disabled = false;
+            }
+        }
     }
 }
 
@@ -15,8 +30,13 @@ function fetchFTMSStatus() {
     fetch('/api/ftms/status')
         .then(r => r.json())
         .then(data => {
+            const forcedOff = !!data.forced_off;
             const active = !!data.enabled;
-            setFTMSUI(active, active ? t('ftms_enabled') : t('ftms_disabled'));
+            if (forcedOff) {
+                setFTMSUI(false, t('ftms_forced_off'), { forcedOff: true });
+            } else {
+                setFTMSUI(active, active ? t('ftms_enabled') : t('ftms_disabled'));
+            }
         })
         .catch(() => {
             setFTMSUI(false, t('ftms_unknown'));
@@ -32,6 +52,10 @@ function toggleFTMS() {
     fetch('/api/ftms/status')
         .then(r => r.json())
         .then(data => {
+            if (data && data.forced_off) {
+                setFTMSUI(false, t('ftms_forced_off'), { forcedOff: true });
+                return null;
+            }
             const active = !!data.enabled;
             const endpoint = active ? '/api/ftms/stop' : '/api/ftms/start';
             return fetch(endpoint, { method: 'POST' });
@@ -44,8 +68,8 @@ function toggleFTMS() {
         })
         .finally(() => {
             if (btn) {
-                btn.disabled = false;
                 btn.classList.remove('loading');
+                btn.disabled = btn.dataset.forcedOff === "1";
             }
         });
 }

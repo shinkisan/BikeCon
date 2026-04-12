@@ -57,7 +57,6 @@
             } else if (msg.type === 'session_state') {
                 lastBikeMsgAt = Date.now();
                 updateSessionState(msg.state, msg.active_duration_sec);
-                setActiveState(msg.state === 'ACTIVE');
             }
             } catch (e) {}
         }
@@ -304,25 +303,22 @@
                 const isPaused = (lastStatusName === 'PAUSED') || (lastStatusCode === 4);
                 startBtn.innerText = isPaused ? t('btn_resume') : t('btn_start');
             }
-            if (!bikeConnected) {
-                if (btStatusEl) {
-                    btStatusEl.innerText = getStatusLabel();
+            if (btStatusEl) {
+                btStatusEl.innerText = getStatusLabel();
+                // Determine 'active' display state from last known status as well
+                const displayActive = (lastStatusName === 'ACTIVE') || (lastStatusCode === 3) || (bikeActive && bikeConnected);
+                if (displayActive) {
+                    btStatusEl.style.color = "var(--primary-accent)";
+                    btStatusEl.style.background = "rgba(0, 255, 136, 0.1)";
+                } else if (isTransitionState()) {
+                    btStatusEl.style.color = "#ffca28";
+                    btStatusEl.style.background = "rgba(255, 202, 40, 0.12)";
+                } else if (!bikeConnected) {
                     btStatusEl.style.color = "#f44336";
                     btStatusEl.style.background = "none";
-                }
-            } else {
-                if (btStatusEl) {
-                    btStatusEl.innerText = getStatusLabel();
-                    if (bikeActive) {
-                        btStatusEl.style.color = "var(--primary-accent)";
-                        btStatusEl.style.background = "rgba(0, 255, 136, 0.1)";
-                    } else if (isTransitionState()) {
-                        btStatusEl.style.color = "#ffca28";
-                        btStatusEl.style.background = "rgba(255, 202, 40, 0.12)";
-                    } else {
-                        btStatusEl.style.color = "#888";
-                        btStatusEl.style.background = "none";
-                    }
+                } else {
+                    btStatusEl.style.color = "#888";
+                    btStatusEl.style.background = "none";
                 }
             }
 
